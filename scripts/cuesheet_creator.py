@@ -2040,7 +2040,12 @@ def cmd_build_xlsx(args: argparse.Namespace) -> int:
                 with PILImage.open(keyframe_path) as image:
                     width, height = image.size
                 scaled_w, scaled_h = scale_dimensions(width, height, args.image_max_width, args.image_max_height)
-                xl_image = XLImage(str(keyframe_path))
+                # Resize image before embedding to reduce xlsx size and speed up generation
+                with PILImage.open(keyframe_path) as img:
+                    thumb = img.resize((scaled_w, scaled_h), PILImage.LANCZOS)
+                    thumb_path = keyframe_path.parent / f".thumb_{keyframe_path.name}"
+                    thumb.save(str(thumb_path), "JPEG", quality=85)
+                xl_image = XLImage(str(thumb_path))
                 xl_image.width = scaled_w
                 xl_image.height = scaled_h
                 anchor_cell = ws.cell(row=row_idx, column=keyframe_col_index)
@@ -2070,6 +2075,20 @@ def cmd_build_xlsx(args: argparse.Namespace) -> int:
     output_path = Path(args.output)
     ensure_parent(output_path)
     wb.save(output_path)
+
+    # Clean up temporary thumbnail files
+    if keyframe_col_index is not None:
+        for item in rows:
+            kf_value = item.get("keyframe")
+            kf_path = resolve_keyframe_path(base_dir, kf_value)
+            if kf_path:
+                thumb = kf_path.parent / f".thumb_{kf_path.name}"
+                if thumb.exists():
+                    try:
+                        thumb.unlink()
+                    except OSError:
+                        pass
+
     print(str(output_path))
 
     # --- Delivery completeness summary ---

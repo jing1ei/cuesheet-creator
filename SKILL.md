@@ -460,6 +460,8 @@ Validates: time continuity, required field completeness, temp-name marker consis
 
 ### Step 7: Export final deliverables
 
+> **CRITICAL for agents**: Both `build-xlsx` and `export-md` are **single CLI commands** that handle everything internally — including keyframe embedding into Excel. Do NOT attempt to embed images manually or process keyframes one-by-one in the conversation. Just run the command and let it finish.
+
 **Excel:**
 
 ```bash
