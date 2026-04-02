@@ -127,20 +127,6 @@ The `assets/` directory contains structural samples showing the expected data fo
 | [`references/field-templates.md`](references/field-templates.md) | Field definitions per template |
 | [`references/review-checklist.md`](references/review-checklist.md) | Delivery checklist |
 
-## Publishing to Git
-
-When creating a public repository, **do not push the entire working directory**. Create a clean repo:
-
-```bash
-mkdir cuesheet-creator && cd cuesheet-creator
-git init
-# Copy only source files: SKILL.md, README.md, LICENSE, requirements.txt,
-#   scripts/, assets/, references/, .gitignore
-# Do NOT copy: .workbuddy/, tools/, any generated output files
-git add -A && git commit -m "Initial release v1.0.0"
-```
-
-## Version
 
 Run `python scripts/cuesheet_creator.py --version` to check the installed version.
 
