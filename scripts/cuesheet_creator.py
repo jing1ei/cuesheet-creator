@@ -1356,7 +1356,12 @@ def cmd_scan_video(args: argparse.Namespace) -> int:
     if not video_path.exists() or not video_path.is_file():
         raise FileNotFoundError(f"Video not found: {video_path}")
 
-    out_dir = Path(args.out_dir)
+    # Default out-dir: same folder as the video, named <video-stem>_cuesheet/
+    if args.out_dir:
+        out_dir = Path(args.out_dir)
+    else:
+        out_dir = video_path.parent / f"{video_path.stem}_cuesheet"
+
     keyframe_dir = out_dir / "keyframes"
     keyframe_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1603,7 +1608,13 @@ def cmd_scan_video(args: argparse.Namespace) -> int:
 
     analysis_path = out_dir / "analysis.json"
     write_json(analysis_path, analysis)
-    print(str(analysis_path))
+
+    # Print output summary so the user/agent knows where files are
+    print(f"Output directory: {out_dir}")
+    print(f"  analysis.json : {analysis_path}")
+    print(f"  keyframes/    : {keyframe_dir} ({len(sampled_frames)} frames)")
+    if asr_result.get("status") == "ok":
+        print(f"  audio.wav     : {out_dir / 'audio.wav'}")
     return 0
 
 
@@ -2650,7 +2661,7 @@ def build_parser() -> argparse.ArgumentParser:
     scan = subparsers.add_parser("scan-video", help="Extract frames and generate analysis.json")
 
     scan.add_argument("--video", type=resolved_path, required=True, help="Video file path")
-    scan.add_argument("--out-dir", type=resolved_path, required=True, help="Output directory")
+    scan.add_argument("--out-dir", type=resolved_path, default=None, help="Output directory (default: <video-dir>/<video-name>_cuesheet/)")
     scan.add_argument("--sample-interval", type=float, default=2.0, help="Sampling interval in seconds")
     scan.add_argument("--scene-threshold", type=float, default=0.35, help="Histogram cut threshold (fallback mode)")
     scan.add_argument("--content-threshold", type=float, default=27.0, help="PySceneDetect ContentDetector threshold")

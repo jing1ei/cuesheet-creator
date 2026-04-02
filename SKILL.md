@@ -68,6 +68,7 @@ Single video → single cue sheet only. Not in v1: batch processing, merging mul
 | Item | Default |
 |---|---|
 | Video path | (must be provided by user) |
+| Output directory | `<video-dir>/<video-name>_cuesheet/` (same folder as the video) |
 | Delivery phase | Draft first, then final |
 | Output template | `production` |
 | Analyze specific segment only | No |
@@ -169,8 +170,10 @@ Post-check rules:
 ### Step 2: Pre-analysis
 
 ```bash
-python scripts/cuesheet_creator.py scan-video --video <video-path> --out-dir <out-dir>
+python scripts/cuesheet_creator.py scan-video --video <video-path>
 ```
+
+> **Output directory**: If `--out-dir` is not specified, outputs are written to `<video-dir>/<video-name>_cuesheet/` — a folder created next to the video file. The script prints the output directory path after completion. You can override with `--out-dir <custom-path>` if needed.
 
 Optional enhancements (add as needed):
 
@@ -583,7 +586,7 @@ Detailed checklist in `references/review-checklist.md`. Core checks:
 | `prepare-env` | One-command env check + optional install + recheck |
 | `selfcheck` | Standalone environment check |
 | `install-deps` | Install missing Python packages |
-| `scan-video` | Extract frames + scene detection + optional ASR/OCR + output analysis.json. Supports `--start-time` / `--end-time` for clip range. |
+| `scan-video` | Extract frames + scene detection + optional ASR/OCR + output analysis.json. Default output: `<video-dir>/<video-name>_cuesheet/`. Supports `--start-time` / `--end-time` for clip range. |
 | `draft-from-analysis` | Generate template-differentiated draft skeleton from analysis.json |
 | `merge-blocks` | Merge draft blocks based on a merge plan (with validation). Unreferenced blocks are auto-appended with `"unmerged": true` flag (not silently dropped). Use `--strict` to fail on unreferenced blocks instead. |
 | `build-final-skeleton` | Generate empty final_cues.json skeleton from merged/draft blocks for LLM fill-in |
