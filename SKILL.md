@@ -254,6 +254,7 @@ Post-check rules:
 
 - `ffmpeg` / `ffprobe` missing → **Stop**, provide install guidance as above.
 - Required Python packages missing → Based on user choice, stop at check or continue installing.
+- SceneDetect missing → **Continue** (histogram fallback works), but mention to the user: "场景检测目前用的是基础模式。如果你的视频有很多溶解或渐变转场，可以安装 scenedetect 提升准确度。需要我帮你装吗？" If user says yes, run `prepare-env --mode install-scene --out-dir <out-dir>` and re-run scan-video.
 - Optional ASR missing → Continue, but mark "dialogue confidence degraded."
 - Optional OCR missing → Continue, skip on-screen text recognition.
 

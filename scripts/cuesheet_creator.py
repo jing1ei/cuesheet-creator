@@ -1431,6 +1431,7 @@ def cmd_scan_video(args: argparse.Namespace) -> int:
         notes.append(f"Using PySceneDetect ContentDetector (threshold={sd_content_threshold})")
     else:
         notes.append(f"PySceneDetect unavailable ({sd_err}), falling back to histogram-based cut detection")
+        notes.append("TIP: For better scene detection (especially dissolves/fades), install scenedetect: python scripts/cuesheet_creator.py prepare-env --mode install-scene --out-dir <out-dir>")
 
     # --- Sample frames and save keyframes ---
     prev_frame = None
