@@ -25,6 +25,97 @@ Turn a single video into a "discussable, confirmable, deliverable" cue sheet. Th
 
 Single video → single cue sheet only. Not in v1: batch processing, merging multiple cue sheet versions, syncing to enterprise docs/spreadsheets, auto-generating scoring brief packages.
 
+---
+
+## Agent Contract
+
+> This section defines what an agent MUST know to execute this skill reliably. It is the authoritative reference for inputs, outputs, decision points, and failure behavior.
+
+### Required inputs
+
+| Input | Notes |
+|---|---|
+| **Video file path** | The only mandatory input. Must be a local file path the agent can access. |
+
+Everything else has sensible defaults. If the user provides only a video, the agent can run the full workflow without asking further questions (except at mandatory checkpoints below).
+
+### Optional inputs
+
+| Input | Default | When to ask |
+|---|---|---|
+| Output template | `production` | Only if user mentions music/scoring or script/story focus |
+| Output directory | `<video-dir>/<video-stem>_cuesheet/` | Only if user wants output elsewhere |
+| ASR (speech recognition) | Off | Offer if dialogue analysis is needed |
+| OCR (on-screen text) | Off | Offer if video has subtitles/UI text |
+| Clip range (`--start-time` / `--end-time`) | Full video | Only for long videos or user-specified segments |
+| Naming overrides | None | Only after Phase A draft is generated |
+| pip mirror (`--index-url`) | None | Only if user is in China or on restricted network |
+
+### Produced artifacts
+
+| File | Always? | Notes |
+|---|---|---|
+| `<out-dir>/analysis.json` | ✅ | Raw scan output — scene candidates, keyframes, ASR/OCR data |
+| `<out-dir>/keyframes/*.jpg` | ✅ | Keyframe screenshots with sharpness scores |
+| `<out-dir>/cue_sheet.md` | ✅ | Markdown deliverable (draft in Phase A, final in Phase B) |
+| `<out-dir>/final_cues.json` | ✅ | Structured cue data for export |
+| `<out-dir>/cue_sheet.xlsx` | ✅ | Excel deliverable with embedded keyframes (production template) |
+| `<out-dir>/audio.wav` | Only with `--asr` | Intermediate; safe to delete after analysis |
+| `<out-dir>/merged_blocks.json` | Only if merge step runs | LLM-driven block merge output |
+
+### Stop-and-ask checkpoints
+
+The agent **MUST stop and wait for user response** at these points. Do NOT auto-continue past them.
+
+| # | Checkpoint | When | What to ask |
+|---|---|---|---|
+| **C1** | FFmpeg missing | After Step 1 selfcheck | Guide installation (one option at a time per Step 1.5) |
+| **C2** | Naming confirmation | After Phase A draft | Present naming tables for characters, scenes, props. Ask user to confirm or override. |
+| **C3** | Template + final confirmation | Before Phase B export | "Proceed to final export with template X? Any naming changes?" |
+
+### Auto-continue rules
+
+The agent **MAY proceed automatically** (no user confirmation needed) in these cases:
+
+| Situation | Action |
+|---|---|
+| scan-video succeeds | → Automatically run draft-from-analysis |
+| validate-cue-json reports warnings but no errors | → Report warnings, continue to export |
+| validate-cue-json reports errors | → Report errors, do NOT export. Ask user how to fix. |
+| ASR/OCR unavailable | → Continue without them, note degradation in draft |
+| User says "skip naming" or "use temp names" | → Proceed with temp markers, list unconfirmed items in final |
+| User provides naming overrides after C2 | → Apply overrides, then proceed to merge/final |
+
+### Resume rules
+
+If the workflow is interrupted mid-session:
+
+1. **Check what already exists** in `<out-dir>/`: if `analysis.json` exists, skip scan-video. If `cue_sheet.md` exists, skip draft generation.
+2. **Re-read existing artifacts** before continuing — don't regenerate what's already there.
+3. **Re-running any command is safe** — all commands overwrite their output files without corrupting other artifacts in the same directory.
+4. **Naming confirmation state is NOT persisted** — if the session is interrupted after C2, ask again.
+
+### Hard acceptance criteria (for validate-cue-json)
+
+A cue sheet is **not delivery-ready** if any of these fail:
+
+- Every row has `start_time` and `end_time` in `HH:MM:SS.mmm` format
+- No duplicate `shot_block` IDs
+- Every `temp:` marker in naming fields has a corresponding `needs_confirmation` entry
+- Template-required fields are non-empty (see `references/field-templates.md`)
+- Keyframe files exist on disk (when `--check-files` is used)
+
+### Non-goals — what this skill will NOT do
+
+- Will not guess official character/scene/prop names — always uses `temp:` markers until confirmed
+- Will not auto-install ffmpeg
+- Will not auto-upgrade pip packages without explicit user permission
+- Will not process multiple videos in one run
+- Will not generate music/scoring briefs (v1 scope)
+- Will not sync outputs to external services (Google Sheets, TAPD, etc.)
+
+---
+
 ## Default deliverables
 
 - `cue_sheet.md` — Markdown final

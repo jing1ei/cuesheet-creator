@@ -1609,12 +1609,40 @@ def cmd_scan_video(args: argparse.Namespace) -> int:
     analysis_path = out_dir / "analysis.json"
     write_json(analysis_path, analysis)
 
-    # Print output summary so the user/agent knows where files are
-    print(f"Output directory: {out_dir}")
-    print(f"  analysis.json : {analysis_path}")
-    print(f"  keyframes/    : {keyframe_dir} ({len(sampled_frames)} frames)")
+    # Build structured summary for agent consumption
+    generated_files = [str(analysis_path), str(keyframe_dir)]
     if asr_result.get("status") == "ok":
-        print(f"  audio.wav     : {out_dir / 'audio.wav'}")
+        generated_files.append(str(out_dir / "audio.wav"))
+
+    summary: dict[str, Any] = {
+        "status": "ok",
+        "stage": "scan-video",
+        "output_directory": str(out_dir),
+        "generated": generated_files,
+        "keyframe_count": len(sampled_frames),
+        "scene_candidates": len(scene_candidates),
+        "draft_blocks": len(draft_blocks),
+        "detection_method": detection_method,
+        "warnings": [n for n in notes if "unavailable" in n.lower() or "failed" in n.lower() or "degraded" in n.lower() or "skipped" in n.lower()],
+        "notes": notes,
+        "degradation": analysis["degradation"],
+        "next_recommended_step": f"draft-from-analysis --analysis-json {analysis_path} --output {out_dir / 'cue_sheet.md'} --template production",
+    }
+
+    if args.output_format == "json":
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+    else:
+        # Human-readable output
+        print(f"Output directory: {out_dir}")
+        print(f"  analysis.json : {analysis_path}")
+        print(f"  keyframes/    : {keyframe_dir} ({len(sampled_frames)} frames)")
+        if asr_result.get("status") == "ok":
+            print(f"  audio.wav     : {out_dir / 'audio.wav'}")
+        if summary["warnings"]:
+            for w in summary["warnings"]:
+                print(f"  ⚠ {w}")
+        print(f"Next step: draft-from-analysis")
+
     return 0
 
 
@@ -2672,6 +2700,7 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--ocr", action="store_true", help="Enable OCR text detection (requires rapidocr / easyocr / paddleocr)")
     scan.add_argument("--start-time", default=None, help="Clip start time (HH:MM:SS.mmm, HH:MM:SS, MM:SS, or seconds)")
     scan.add_argument("--end-time", default=None, help="Clip end time (HH:MM:SS.mmm, HH:MM:SS, MM:SS, or seconds)")
+    scan.add_argument("--output-format", choices=["text", "json"], default="text", help="Output format: text (human) or json (agent-friendly summary)")
     scan.set_defaults(func=cmd_scan_video)
 
     draft = subparsers.add_parser("draft-from-analysis", help="Generate draft skeleton from analysis.json")
