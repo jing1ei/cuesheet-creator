@@ -1,0 +1,14 @@
+{
+  "characters": {
+    "temp: Girl-A": "Lin Xia",
+    "temp: Boy-B": "Gu Yan"
+  },
+  "scenes": {
+    "temp: Main Hall": "Central Hall",
+    "temp: Corridor": "North Main Corridor"
+  },
+  "props": {
+    "temp: Box-A": "Memory Box"
+  },
+  "notes": "If user has not confirmed, keep temp names and continue listing them in needs_confirmation in the final."
+}

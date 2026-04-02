@@ -1,0 +1,47 @@
+{
+  "_note": "This is a structural sample. Keyframe paths (keyframes/A1.jpg etc.) are illustrative and do not point to real files.",
+  "template": "production",
+  "video_title": "sample-video",
+  "source_path": "path/to/video.mp4",
+  "generated_at": "2026-03-31T23:11:00",
+  "rows": [
+    {
+      "shot_block": "A1",
+      "start_time": "00:00:00.000",
+      "end_time": "00:00:08.400",
+      "keyframe": "keyframes/A1.jpg",
+      "shot_size": "WS",
+      "angle_or_lens": "front / centered",
+      "motion": "slow push-in",
+      "scene": "temp: Main Hall",
+      "mood": "establishing, solemn, expectant",
+      "location": "interior main hall",
+      "characters": "temp: Girl-A; extras",
+      "event": "Establish main space and introduce central character",
+      "important_dialogue": "Narrator: Welcome to...",
+      "music_note": "thin pad + light pulse, prepare shift at 8.4s",
+      "director_note": "Composition emphasizes depth; watch crowd blocking and center axis",
+      "confidence": "segment=high; names=low",
+      "needs_confirmation": "character official names; main hall setup name"
+    },
+    {
+      "shot_block": "A2",
+      "start_time": "00:00:08.400",
+      "end_time": "00:00:17.900",
+      "keyframe": "keyframes/A2.jpg",
+      "shot_size": "MS",
+      "angle_or_lens": "OTS",
+      "motion": "handheld drift",
+      "scene": "temp: Corridor",
+      "mood": "tension rising",
+      "location": "interior corridor",
+      "characters": "temp: Girl-A; temp: Boy-B",
+      "event": "Character relationship shifts to confrontation",
+      "important_dialogue": "Girl-A: You finally came.",
+      "music_note": "sub-bass drone enters, lift tension once before 17.9s",
+      "director_note": "Maintain distance between characters; camera shake should not overpower performance",
+      "confidence": "segment=medium; dialogue=medium",
+      "needs_confirmation": "both character official names"
+    }
+  ]
+}

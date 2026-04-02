@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# cuesheet-creator generated outputs
+# (keep in output directories, don't commit to repo)
+analysis.json
+audio.wav
+keyframes/
+cue_sheet.md
+cue_sheet.xlsx
+final_cues.json
+merged_blocks.json
+prepare_env.json
+selfcheck.pre.json
+selfcheck.post.json
+install_report.json
+
+# Portable FFmpeg (user-provided, not part of source)
+tools/
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# WorkBuddy internal
+.workbuddy/
