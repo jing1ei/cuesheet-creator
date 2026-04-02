@@ -86,6 +86,11 @@ The agent **MAY proceed automatically** (no user confirmation needed) in these c
 | User says "skip naming" or "use temp names" | → Proceed with temp markers, list unconfirmed items in final |
 | User provides naming overrides after C2 | → Apply overrides, then proceed to merge/final |
 
+### Efficiency rules
+
+- **Step 3b (LLM fill-in)**: Read analysis.json + view keyframes in batches of 5-8 images. Fill ALL blocks in one writing pass. Do NOT loop one image at a time — this will exhaust token budget and step limits.
+- **Step 7 (Export)**: Run `build-xlsx` and `export-md` as single CLI commands. Do NOT manually embed images or generate Excel content in the conversation.
+
 ### Resume rules
 
 If the workflow is interrupted mid-session:
@@ -303,7 +308,15 @@ Skeleton includes: video info table, candidate segment table (time + cut reason)
 
 #### 3b. LLM content fill-in (critical step)
 
-Read the skeleton draft and `keyframes/` screenshots. **For each shot block**, examine the corresponding keyframe and fill in using the following rules:
+> **IMPORTANT — Efficiency rule**: Do NOT process keyframes one-by-one in a loop. Instead:
+> 1. Read the skeleton draft (`cue_sheet.md`)
+> 2. Read `analysis.json` to get the full list of blocks, keyframe paths, and any ASR/OCR data
+> 3. View keyframe images in small batches (5-8 at a time) — not individually
+> 4. Fill in ALL blocks in one writing pass, outputting the complete updated Markdown
+>
+> The goal is to minimize tool calls. A 20-block cue sheet should take 2-4 rounds, not 20.
+
+For each shot block, use the corresponding keyframe to fill in fields using these rules:
 
 **Visual cue → field mapping rules:**
 
