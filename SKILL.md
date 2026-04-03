@@ -73,8 +73,11 @@ The agent **MUST stop and wait for user response** at these points. Do NOT auto-
 | # | Checkpoint | When | What to ask |
 |---|---|---|---|
 | **C1** | FFmpeg missing | After Step 1 selfcheck | Guide installation (one option at a time per Step 1.5) |
-| **C2** | Naming confirmation | After Phase A draft | Present naming tables for characters, scenes, props. Ask user to confirm or override. |
-| **C3** | Template + final confirmation | Before Phase B export | "Proceed to final export with template X? Any naming changes?" |
+| **C2** | Draft review + naming + final confirmation | After Phase A export (Excel + Markdown generated with `temp:` markers) | Present the Excel/Markdown deliverable first. Then: "这是初版 cue sheet（临时名称用 temp: 标注）。要替换这些临时名称吗？还是先用这版？" |
+
+> **Design rationale for C2**: Users understand naming better when they can **see** the cue sheet with `temp:` markers in context — in the actual Excel layout with keyframes — rather than staring at an abstract naming confirmation table. So we generate the full deliverable first (with `temp:` markers and `delivery_ready: NO`), show it, and THEN offer naming replacement as an optional refinement step. If the user provides names, apply them and re-export. If the user says "先这样" / "skip naming", deliver as-is.
+
+**Previous C3 (template + final confirmation) is absorbed into C2.** Template is now confirmed in Step 0 upfront, so no need for a separate pre-export gate.
 
 ### Auto-continue rules
 
@@ -87,7 +90,29 @@ The agent **MAY proceed automatically** (no user confirmation needed) in these c
 | validate-cue-json reports errors | → Report errors, do NOT export. Ask user how to fix. |
 | ASR/OCR unavailable | → Continue without them, note degradation in draft |
 | User says "skip naming" or "use temp names" | → Proceed with temp markers, list unconfirmed items in final |
-| User provides naming overrides after C2 | → Apply overrides, then proceed to merge/final |
+| User provides naming overrides after C2 | → Apply overrides, then re-export |
+
+### Progress signals (mandatory)
+
+> **The #1 UX failure mode is silence.** If the user sees no output for >60 seconds, they assume the skill is dead. Preventing this is non-negotiable.
+
+The agent **MUST** emit a short status line to the user at these points. These are NOT checkpoints — they do not require a user response, do not block the workflow, and must cost ≤ 15 words each.
+
+| When | What to say (example) |
+|---|---|
+| Before `prepare-env` / `install-deps` starts | `⏳ 正在检查运行环境…` |
+| After env check, before `scan-video` starts | `⏳ 环境就绪，开始扫描视频…` |
+| If `scan-video` runs >30s (long video) | `⏳ 视频扫描中（已采样 N 帧）…` |
+| After `scan-video` completes | `✅ 扫描完成：N 个候选切点，M 张关键帧` |
+| If ASR/OCR degrades or fails | `⚠️ 语音识别不可用，将依赖 OCR 字幕/纯画面分析` |
+| Before starting keyframe batch fill-in | `⏳ 开始逐批查看关键帧并填写语义信息（共 N 批）…` |
+| After each keyframe batch is filled | `[进度] 已完成 X/N 批（Y/Z blocks）` |
+| Before export step starts | `⏳ 正在生成 Excel + Markdown…` |
+| After export completes | `✅ 已生成 cue_sheet.xlsx 和 cue_sheet.md` |
+
+**Rule**: If any single operation (command execution, keyframe viewing, file writing) is expected to take >30 seconds, emit a progress signal BEFORE starting it. If a multi-batch operation (like keyframe fill-in) will take multiple rounds, emit progress AFTER each round.
+
+**Token budget**: All progress signals combined should cost <200 tokens per full workflow. Use terse, factual messages. No pleasantries, no explanations.
 
 ### Efficiency rules
 
@@ -107,7 +132,7 @@ If the workflow is interrupted mid-session:
    - If `cue_sheet.md` exists but `draft_fill.json` does not → skeleton was generated but JSON fill-in file is missing. Re-run `draft-from-analysis` to regenerate both.
 2. **Re-read existing artifacts** before continuing — don't regenerate what's already there.
 3. **Re-running any command is safe** — all commands overwrite their output files without corrupting other artifacts in the same directory.
-4. **Naming confirmation state is NOT persisted** — if the session is interrupted after C2, ask again.
+4. **Naming confirmation state is NOT persisted** — if the session is interrupted after C2, ask again about naming when you re-export.
 
 ### Hard acceptance criteria (for validate-cue-json)
 
@@ -163,6 +188,7 @@ A cue sheet is **not delivery-ready** if any of these fail:
 4. **Perspective separation**: Keep director, production, and music supervisor perspectives separate. Do not blend them into a film-review paragraph.
 5. **Long video protection**: For videos over 20 minutes, default to a structural draft first. Ask before doing full-detail expansion.
 6. **Install safety**: When the user has not explicitly specified an install level, **never** auto-upgrade to any `install-*` mode. Default is always `check-only`. Even if the user says "set up my environment," confirm the exact install scope first.
+7. **Progress reporting**: Never let the user wait >60 seconds without a status signal. See **Progress signals** in Agent Contract. Silence = the user thinks you're dead.
 
 ---
 
@@ -170,12 +196,22 @@ A cue sheet is **not delivery-ready** if any of these fail:
 
 ### Step 0: Confirm input and delivery strategy
 
+> **Template/purpose confirmation is mandatory.** Before any analysis begins, ask the user who this cue sheet is for. This one question determines the entire downstream strategy (segmentation, keyframe priority, merge bias, columns). Do NOT silently default to `production` — always confirm.
+
+**Exactly one question, before anything else:**
+
+> "收到视频。这份 Cue Sheet 主要给谁用？（默认走通用制片模板 `production`，也可以选 `music-director` / `script`，或者告诉我你的部门/角色，我来帮你匹配。）"
+
+If the user's answer clearly maps to a built-in template → use it. If the user describes a role not covered → trigger the custom template guided creation flow (see **Custom templates** section). If the user says "默认" or just wants to get started → use `production`.
+
+**Only proceed to Step 1 after template is confirmed.** This avoids re-doing analysis with different segmentation strategies later.
+
 | Item | Default |
 |---|---|
 | Video path | (must be provided by user) |
 | Output directory | `<video-dir>/<video-name>_cuesheet/` (same folder as the video) |
 | Delivery phase | Draft first, then final |
-| Output template | `production` |
+| Output template | **Ask user** (fallback `production`) |
 | Analyze specific segment only | No |
 | Keep intermediate JSON | Keep `analysis.json` |
 | Install strategy | `check-only` |
@@ -400,32 +436,43 @@ After fill-in, the draft must contain:
 - Pending questions
 - ASR / OCR key info if available
 
-### Step 4: Naming confirmation gate
+### Step 4: Export draft deliverables (Excel-first)
 
-**Confirm by category**, not as one lump question:
+> **Show the user something tangible before asking questions.** Generate the full Excel + Markdown deliverables with `temp:` markers, then present them. This is more useful than an abstract naming table.
 
-1. Character official names
-2. Scene / setup official names
-3. Key prop official names
-4. Output template preference
-5. Whether to proceed to final
-
-If user doesn't respond → Allow continuation, keep "temp:" markers in final, explicitly list unconfirmed items in the pending column.
-
-If user provides naming overrides, apply them to the draft Markdown or (later) to the final JSON:
+**Generate draft export** (with temp: markers, before naming confirmation):
 
 ```bash
-# Preview changes without modifying files
-python scripts/cuesheet_creator.py apply-naming --overrides <naming_overrides.json> --md <cue_sheet.md> --dry-run
+# Generate final_cues.json from filled draft
+python scripts/cuesheet_creator.py build-final-skeleton --source-json <out-dir>/draft_fill.json --output <out-dir>/final_cues.json
 
-# Apply to final JSON (after Step 6), write to a new file
-python scripts/cuesheet_creator.py apply-naming --overrides <naming_overrides.json> --cue-json <final_cues.json> --output <new_final_cues.json>
+# Export Excel (with temp: markers visible)
+python scripts/cuesheet_creator.py build-xlsx --cue-json <out-dir>/final_cues.json --output <out-dir>/cue_sheet.xlsx --base-dir <out-dir>
 
-# Apply in-place to both files
-python scripts/cuesheet_creator.py apply-naming --overrides <naming_overrides.json> --cue-json <final_cues.json> --md <cue_sheet.md>
+# Export Markdown
+python scripts/cuesheet_creator.py export-md --cue-json <out-dir>/final_cues.json --output <out-dir>/cue_sheet.md
 ```
 
-Note: JSON replacements are field-scoped (only naming-relevant fields like scene, characters, location, event, dialogue, needs_confirmation are modified). Markdown replacements are full-text.
+**Present the deliverable to the user** (this is checkpoint **C2**):
+
+> "这是初版 Cue Sheet。临时名称（temp: xxx）还没替换。你可以先看看整体结构和内容是否合理。
+> 要替换临时名称吗？还是先用这版？"
+
+### Step 4b: Naming refinement (optional, only if user provides names)
+
+If user provides naming overrides, apply them and re-export:
+
+```bash
+# Apply naming overrides
+python scripts/cuesheet_creator.py apply-naming --overrides <naming_overrides.json> --cue-json <final_cues.json> --md <cue_sheet.md>
+
+# Re-export Excel with confirmed names
+python scripts/cuesheet_creator.py build-xlsx --cue-json <out-dir>/final_cues.json --output <out-dir>/cue_sheet.xlsx --base-dir <out-dir>
+```
+
+If user says "先这样" or "skip naming" → deliver the current version as-is. Note unconfirmed items in the pending column.
+
+If user doesn't respond → Allow continuation, keep "temp:" markers in final, explicitly list unconfirmed items in the pending column.
 
 ### Step 5: Director-style block merging
 
@@ -486,57 +533,19 @@ After merging, the script can validate and combine:
 python scripts/cuesheet_creator.py merge-blocks --analysis-json <analysis.json> --merge-plan <merge_plan.json> --output <merged_blocks.json>
 ```
 
-### Step 6: Generate final structure JSON
+> **After merge (or if merge is skipped)**: proceed directly to **Step 4: Export draft deliverables**. The old separate "Generate final structure JSON" and "Export final deliverables" steps are now combined in Step 4.
 
-**Option A: Use the filled `draft_fill.json` directly** (recommended — fewest steps):
+### Validate before export
 
-```bash
-python scripts/cuesheet_creator.py build-final-skeleton --source-json <out-dir>/draft_fill.json --output <out-dir>/final_cues.json --template production
-```
-
-> `build-final-skeleton` now accepts `draft_fill.json` as input. It detects the `fill_status` field and preserves all LLM-filled content. This skips the separate "empty skeleton → LLM fill" step entirely.
-
-**Option B: From merged blocks** (when merge step is used):
+Always validate before exporting. Step 4 should run validation as part of the export flow:
 
 ```bash
-python scripts/cuesheet_creator.py build-final-skeleton --source-json <out-dir>/merged_blocks.json --output <out-dir>/final_cues.json --template production --video-title "My Video" --source-path <video-path>
-```
-
-> **Note**: When the source is merged blocks (not raw analysis.json), always pass `--source-path` and `--video-title` explicitly. Otherwise metadata may fall back to intermediate file paths.
-
-**Option C: LLM generates the full JSON directly** — structure reference: `assets/final_cues.sample.json`.
-
-Requirements:
-
-- All time fields use `HH:MM:SS.mmm`
-- Time input arguments (`--start-time`, `--end-time`) accept flexible formats: `HH:MM:SS.mmm`, `HH:MM:SS`, `MM:SS.mmm`, `MM:SS`, or bare seconds
-- `keyframe` should be the frame that best represents the block's dominant composition
-- Use `confidence` / `needs_confirmation` to flag low-confidence items
-- Select fields based on template; don't force irrelevant columns (field definitions in `references/field-templates.md`)
-
-Validate immediately after generation:
-
-```bash
-python scripts/cuesheet_creator.py validate-cue-json --cue-json <out-dir>/final_cues.json --template production --base-dir <out-dir> --check-files
+python scripts/cuesheet_creator.py validate-cue-json --cue-json <out-dir>/final_cues.json --base-dir <out-dir> --check-files
 ```
 
 Validates: time continuity, required field completeness, temp-name marker consistency, template field matching, keyframe file existence (with `--check-files`).
 
-### Step 7: Export final deliverables
-
 > **CRITICAL for agents**: Both `build-xlsx` and `export-md` are **single CLI commands** that handle everything internally — including keyframe embedding into Excel. Do NOT attempt to embed images manually or process keyframes one-by-one in the conversation. Just run the command and let it finish.
-
-**Excel:**
-
-```bash
-python scripts/cuesheet_creator.py build-xlsx --cue-json <out-dir>/final_cues.json --output <out-dir>/cue_sheet.xlsx --base-dir <out-dir>
-```
-
-**Markdown sync version:**
-
-```bash
-python scripts/cuesheet_creator.py export-md --cue-json <out-dir>/final_cues.json --output <out-dir>/cue_sheet.md --template production
-```
 
 ---
 
