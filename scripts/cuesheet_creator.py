@@ -2245,7 +2245,7 @@ def cmd_draft_from_analysis(args: argparse.Namespace) -> int:
             "After filling, this file can be used directly as input to build-final-skeleton or validate-cue-json."
         ),
         "template": template,
-        "video_title": video.get("source_path", "untitled"),
+        "video_title": Path(video.get("source_path", "untitled")).stem if video.get("source_path") else "untitled",
         "source_path": video.get("source_path", ""),
         "fill_status": fill_status,
         "rows": fill_rows,
@@ -2398,13 +2398,15 @@ def cmd_build_xlsx(args: argparse.Namespace) -> int:
     # --- Delivery completeness summary ---
     print("--- delivery summary ---")
     print(f"  rows exported: {len(rows)}")
+    if not rows:
+        print("  WARNING: no rows exported — cue sheet is empty")
     if keyframe_col_index is not None:
         print(f"  embedded keyframes: {embedded_keyframes}/{len(rows)}")
         if missing_keyframes:
             print(f"  WARNING: missing keyframes for blocks: {', '.join(missing_keyframes)}")
     if empty_recommended_fields > 0:
         print(f"  WARNING: {empty_recommended_fields} empty recommended field(s) across all rows")
-    delivery_ready = (not missing_keyframes or keyframe_col_index is None) and empty_recommended_fields == 0
+    delivery_ready = len(rows) > 0 and (not missing_keyframes or keyframe_col_index is None) and empty_recommended_fields == 0
     print(f"  delivery_ready: {'YES' if delivery_ready else 'NO — review warnings above'}")
     return 0
 
@@ -2915,6 +2917,24 @@ def cmd_build_final_skeleton(args: argparse.Namespace) -> int:
     if is_fill_input and source.get("rows"):
         # draft_fill.json — rows already have template column structure
         blocks = source["rows"]
+        fill_status = source.get("fill_status", "unknown")
+        if fill_status == "partial":
+            # Check how many required content fields are still empty
+            CONTENT_FIELDS = {"scene", "event", "characters", "mood", "shot_size",
+                              "location", "music_note", "director_note"}
+            empty_count = 0
+            for row in blocks:
+                for f in CONTENT_FIELDS:
+                    val = row.get(f, "")
+                    if f in TEMPLATE_COLUMNS.get(source.get("template", "production"), []):
+                        if not val or val.startswith("[visual:") or val.startswith("[OCR detected:"):
+                            empty_count += 1
+            if empty_count > 0:
+                print(f"WARNING: fill_status is 'partial' — {empty_count} content field(s) still empty or hint-only. "
+                      f"LLM fill-in may be incomplete. Proceeding, but final may have gaps.", file=sys.stderr)
+        elif fill_status == "pending":
+            print("WARNING: fill_status is 'pending' — no LLM fill-in has been done. "
+                  "The final JSON will have mostly empty content fields.", file=sys.stderr)
     else:
         blocks = source.get("blocks") or source.get("draft_blocks", [])
 
@@ -2972,6 +2992,7 @@ def compute_block_continuity(
     block_b: dict[str, Any],
     sampled_frames: list[dict[str, Any]],
     asr_segments: list[dict[str, Any]],
+    threshold: float = 0.65,
 ) -> dict[str, Any]:
     """Compute a continuity score between two adjacent blocks.
     Higher score = more likely candidates for merging."""
@@ -3030,7 +3051,7 @@ def compute_block_continuity(
         "block_b": block_b.get("shot_block", ""),
         "continuity_score": round(total, 3),
         "component_scores": scores,
-        "suggest_merge": total >= 0.65,
+        "suggest_merge": total >= threshold,
     }
 
 
@@ -3056,7 +3077,8 @@ def cmd_suggest_merges(args: argparse.Namespace) -> int:
     pairs: list[dict[str, Any]] = []
     for i in range(len(draft_blocks) - 1):
         pair = compute_block_continuity(
-            draft_blocks[i], draft_blocks[i + 1], sampled_frames, asr_segments
+            draft_blocks[i], draft_blocks[i + 1], sampled_frames, asr_segments,
+            threshold=threshold,
         )
         pairs.append(pair)
 

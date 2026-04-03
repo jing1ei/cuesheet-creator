@@ -75,12 +75,14 @@ python3 scripts/cuesheet_creator.py prepare-env --mode install-required --out-di
 ## Workflow Overview
 
 ```
-Video → scan-video → analysis.json + keyframes/
-     → draft-from-analysis → cue_sheet.md (Phase A draft)
-     → LLM fills in content based on keyframes
+Video → scan-video → analysis.json (with agent_summary + visual_features) + keyframes/
+     → draft-from-analysis → cue_sheet.md + draft_fill.json (auto-prefilled: ASR dialogue, confidence, mood hints, OCR)
+     → LLM fills remaining fields in draft_fill.json
      → Naming confirmation gate
-     → merge-blocks (optional)
-     → build-final-skeleton → final_cues.json
+     → suggest-merges → suggested_merges.json (auto-scored continuity)
+     → LLM reviews merge suggestions for narrative boundaries
+     → merge-blocks (optional, using reviewed merge plan)
+     → build-final-skeleton (accepts draft_fill.json directly) → final_cues.json
      → validate-cue-json
      → build-xlsx + export-md (Phase B final)
 ```
@@ -92,10 +94,11 @@ Video → scan-video → analysis.json + keyframes/
 | `prepare-env` | One-command env check + optional install + recheck |
 | `selfcheck` | Standalone environment check |
 | `install-deps` | Install missing Python packages |
-| `scan-video` | Extract frames + scene detection + optional ASR/OCR |
-| `draft-from-analysis` | Generate template-differentiated draft skeleton |
-| `merge-blocks` | Merge draft blocks based on a merge plan |
-| `build-final-skeleton` | Generate empty final_cues.json for LLM fill-in |
+| `scan-video` | Extract frames + scene detection + visual feature analysis + optional ASR/OCR |
+| `draft-from-analysis` | Generate draft skeleton + JSON fill-in file with auto-prefilled fields |
+| `suggest-merges` | **Auto-compute inter-block continuity scores** and output a suggested merge plan. LLM reviews for narrative boundaries before executing. Use `--threshold` to adjust sensitivity (default 0.65). |
+| `merge-blocks` | Merge draft blocks based on a merge plan (validated) |
+| `build-final-skeleton` | Generate final_cues.json from draft_fill.json, merged blocks, or analysis.json |
 | `apply-naming` | Batch-apply naming overrides |
 | `validate-cue-json` | Structural + delivery readiness validation (`--check-files` recommended before export) |
 | `export-md` | Generate Markdown final from final_cues.json |
