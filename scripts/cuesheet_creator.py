@@ -2,15 +2,17 @@
 """cuesheet-creator — turn a single video into a collaborative cue sheet."""
 from __future__ import annotations
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 import argparse
+import copy
 import datetime as dt
 import importlib
 import json
 import math
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -279,6 +281,23 @@ def get_template_fill_guidance(name: str) -> list[str]:
     return tmpl.get("fill_guidance", [])
 
 
+def get_template_prefill_map(name: str) -> dict[str, str | None]:
+    """Get a field -> prefill_source mapping from the template definition.
+
+    Returns {field_name: prefill_source_or_None} for all columns.
+    This allows the pre-fill logic to be driven by template metadata
+    instead of hardcoded field names.
+    """
+    tmpl = _TEMPLATE_REGISTRY.get(name)
+    if tmpl and "columns" in tmpl:
+        return {
+            col["field"]: col.get("prefill_source")
+            for col in tmpl["columns"]
+            if isinstance(col, dict) and "field" in col
+        }
+    return {}
+
+
 def get_template_column_widths(name: str) -> dict[str, int]:
     """Get column width overrides from a template definition."""
     tmpl = _TEMPLATE_REGISTRY.get(name)
@@ -397,9 +416,7 @@ _CLI_COMMAND_OVERRIDES: dict[str, str] = {}
 
 
 def ensure_parent(path: Path) -> None:
-
-
-
+    """Create parent directories if they don't exist."""
     path.parent.mkdir(parents=True, exist_ok=True)
 
 
@@ -2350,7 +2367,13 @@ def cmd_draft_from_analysis(args: argparse.Namespace) -> int:
         block_end = block.get("end_seconds", 0.0)
         vf = block.get("visual_features") or {}
 
+        # Get prefill routing from template metadata
+        prefill_map = get_template_prefill_map(template)
+
         for col in columns:
+            prefill_src = prefill_map.get(col)
+
+            # --- Structural fields (always filled from block data) ---
             if col == "shot_block":
                 row[col] = block.get("shot_block", "")
             elif col == "start_time":
@@ -2360,8 +2383,8 @@ def cmd_draft_from_analysis(args: argparse.Namespace) -> int:
             elif col == "keyframe":
                 row[col] = kf_rel
 
-            # --- Pre-fill: important_dialogue from ASR ---
-            elif col == "important_dialogue" and asr_segments:
+            # --- Pre-fill driven by prefill_source metadata ---
+            elif prefill_src == "asr" and asr_segments:
                 overlapping = [
                     s for s in asr_segments
                     if s.get("start", 0) < block_end and s.get("end", 0) > block_start
@@ -2374,8 +2397,7 @@ def cmd_draft_from_analysis(args: argparse.Namespace) -> int:
                 else:
                     row[col] = ""
 
-            # --- Pre-fill: confidence from structural data ---
-            elif col == "confidence":
+            elif prefill_src == "confidence":
                 parts = []
                 score = block.get("candidate_score")
                 if detection_method == "scenedetect":
@@ -2384,7 +2406,6 @@ def cmd_draft_from_analysis(args: argparse.Namespace) -> int:
                     parts.append("segment=high")
                 else:
                     parts.append("segment=medium")
-                # ASR coverage
                 if asr_status == "ok":
                     asr_overlap = any(
                         s.get("start", 0) < block_end and s.get("end", 0) > block_start
@@ -2397,14 +2418,11 @@ def cmd_draft_from_analysis(args: argparse.Namespace) -> int:
                 row[col] = "; ".join(parts)
                 has_prefill = True
 
-            # --- Pre-fill: needs_confirmation (always needed) ---
-            elif col == "needs_confirmation":
+            elif prefill_src == "needs_confirmation":
                 row[col] = "character names; scene names"
                 has_prefill = True
 
-            # --- Pre-fill: mood with visual feature hints ---
-            elif col == "mood" and vf:
-                # Provide objective hints, not a final mood label
+            elif prefill_src == "visual_mood" and vf:
                 hints = []
                 if vf.get("tone"):
                     hints.append(f"{vf['tone']} tones")
@@ -2426,11 +2444,11 @@ def cmd_draft_from_analysis(args: argparse.Namespace) -> int:
 
             # --- Default: empty for LLM to fill ---
             else:
-                # Check OCR for director_note / event enrichment
-                if col in ("director_note", "event") and kf_raw:
+                # Check OCR for any field that might benefit from on-screen text hints
+                if kf_raw and ocr_by_frame:
                     kf_name = Path(kf_raw).name if kf_raw else ""
                     ocr_texts = ocr_by_frame.get(str(kf_raw), []) or ocr_by_frame.get(kf_name, [])
-                    if ocr_texts:
+                    if ocr_texts and col in ("director_note", "event"):
                         row[col] = f"[OCR detected: {'; '.join(ocr_texts[:3])}] "
                         has_prefill = True
                     else:
@@ -2496,6 +2514,98 @@ def scale_dimensions(width: int, height: int, max_width: int, max_height: int) -
     return max(int(width * ratio), 1), max(int(height * ratio), 1)
 
 
+# ---------------------------------------------------------------------------
+# Unified delivery readiness evaluation
+# ---------------------------------------------------------------------------
+
+def evaluate_delivery_readiness(
+    rows: list[dict[str, Any]],
+    template: str,
+    base_dir: Path | None = None,
+    check_files: bool = False,
+) -> dict[str, Any]:
+    """Single source of truth for delivery readiness assessment.
+
+    Used by validate-cue-json, build-xlsx, and export-md to produce
+    consistent delivery verdicts.
+
+    Returns: {
+        "row_count": int,
+        "empty_required_fields": int,
+        "empty_recommended_fields": int,
+        "missing_keyframes": [block_labels],
+        "temp_name_gaps": [descriptions],
+        "delivery_ready": bool,
+        "delivery_gaps": [descriptions],
+    }
+    """
+    expected_columns = set(TEMPLATE_COLUMNS.get(template, []))
+    req_fields = get_required_fields(template)
+    rec_fields = get_recommended_fields(template)
+    has_keyframe_col = "keyframe" in expected_columns
+
+    empty_required = 0
+    empty_recommended = 0
+    missing_keyframes: list[str] = []
+    temp_name_gaps: list[str] = []
+    delivery_gaps: list[str] = []
+
+    for row in rows:
+        label = row.get("shot_block", "?")
+
+        # Required fields
+        for rf in req_fields:
+            if rf in expected_columns and not str(row.get(rf, "")).strip():
+                empty_required += 1
+                delivery_gaps.append(f"{label}: required field '{rf}' is empty")
+
+        # Recommended fields (tracked but not delivery-blocking)
+        req_set = set(req_fields)
+        for rec in rec_fields:
+            if rec in req_set:
+                continue
+            if rec in expected_columns and not str(row.get(rec, "")).strip():
+                empty_recommended += 1
+
+        # temp: name consistency
+        naming_fields = ("scene", "characters", "location")
+        needs_conf = str(row.get("needs_confirmation", "")).strip()
+        for nf in naming_fields:
+            value = str(row.get(nf, ""))
+            if "temp:" in value.lower() and not needs_conf:
+                gap = f"{label}: '{nf}' contains temp name but needs_confirmation is empty"
+                temp_name_gaps.append(gap)
+                delivery_gaps.append(gap)
+
+        # Keyframe existence
+        if check_files and has_keyframe_col:
+            kf_value = row.get("keyframe", "")
+            if kf_value:
+                kf_path = resolve_keyframe_path(base_dir, kf_value)
+                if kf_path and not kf_path.exists():
+                    missing_keyframes.append(label)
+                    delivery_gaps.append(f"{label}: keyframe file not found: {kf_path}")
+
+    delivery_ready = (
+        len(rows) > 0
+        and empty_required == 0
+        and len(missing_keyframes) == 0
+        and len(temp_name_gaps) == 0
+    )
+
+    return {
+        "row_count": len(rows),
+        "empty_required_fields": empty_required,
+        "empty_recommended_fields": empty_recommended,
+        "missing_keyframes": missing_keyframes,
+        "temp_name_gaps": temp_name_gaps,
+        "delivery_ready": delivery_ready,
+        "delivery_gaps": delivery_gaps,
+    }
+
+
+
+
 def cmd_build_xlsx(args: argparse.Namespace) -> int:
     try:
         from openpyxl import Workbook
@@ -2536,11 +2646,8 @@ def cmd_build_xlsx(args: argparse.Namespace) -> int:
 
     keyframe_col_index = columns.index("keyframe") + 1 if "keyframe" in columns else None
 
-    # --- Delivery completeness tracking ---
+    # --- Keyframe embedding tracking ---
     embedded_keyframes = 0
-    missing_keyframes: list[str] = []
-    empty_recommended_fields = 0
-    rec_fields = get_recommended_fields(template)
 
     for row_idx, item in enumerate(rows, start=2):
         for col_idx, column_name in enumerate(columns, start=1):
@@ -2548,20 +2655,13 @@ def cmd_build_xlsx(args: argparse.Namespace) -> int:
             cell = ws.cell(row=row_idx, column=col_idx, value=value if column_name != "keyframe" else "")
             cell.alignment = wrap_alignment
 
-        # Track empty recommended fields
-        for rf in rec_fields:
-            if rf in set(columns) and not str(item.get(rf, "")).strip():
-                empty_recommended_fields += 1
-
         if keyframe_col_index is not None:
             keyframe_value = item.get("keyframe")
             keyframe_path = resolve_keyframe_path(base_dir, keyframe_value)
             if keyframe_path and keyframe_path.exists():
-                with PILImage.open(keyframe_path) as image:
-                    width, height = image.size
-                scaled_w, scaled_h = scale_dimensions(width, height, args.image_max_width, args.image_max_height)
-                # Resize image before embedding to reduce xlsx size and speed up generation
                 with PILImage.open(keyframe_path) as img:
+                    width, height = img.size
+                    scaled_w, scaled_h = scale_dimensions(width, height, args.image_max_width, args.image_max_height)
                     thumb = img.resize((scaled_w, scaled_h), PILImage.LANCZOS)
                     thumb_path = keyframe_path.parent / f".thumb_{keyframe_path.name}"
                     thumb.save(str(thumb_path), "JPEG", quality=85)
@@ -2606,24 +2706,28 @@ def cmd_build_xlsx(args: argparse.Namespace) -> int:
                 if thumb.exists():
                     try:
                         thumb.unlink()
-                    except OSError:
-                        pass
+                    except OSError as exc:
+                        print(f"WARNING: Could not remove temporary thumbnail {thumb}: {exc}", file=sys.stderr)
 
     print(str(output_path))
 
-    # --- Delivery completeness summary ---
+    # --- Delivery completeness summary (unified) ---
+    delivery = evaluate_delivery_readiness(
+        rows, template, base_dir=base_dir, check_files=True,
+    )
     print("--- delivery summary ---")
-    print(f"  rows exported: {len(rows)}")
+    print(f"  rows exported: {delivery['row_count']}")
     if not rows:
         print("  WARNING: no rows exported — cue sheet is empty")
     if keyframe_col_index is not None:
         print(f"  embedded keyframes: {embedded_keyframes}/{len(rows)}")
-        if missing_keyframes:
-            print(f"  WARNING: missing keyframes for blocks: {', '.join(missing_keyframes)}")
-    if empty_recommended_fields > 0:
-        print(f"  WARNING: {empty_recommended_fields} empty recommended field(s) across all rows")
-    delivery_ready = len(rows) > 0 and (not missing_keyframes or keyframe_col_index is None) and empty_recommended_fields == 0
-    print(f"  delivery_ready: {'YES' if delivery_ready else 'NO — review warnings above'}")
+        if delivery["missing_keyframes"]:
+            print(f"  WARNING: missing keyframes for blocks: {', '.join(delivery['missing_keyframes'])}")
+    if delivery["empty_required_fields"] > 0:
+        print(f"  WARNING: {delivery['empty_required_fields']} empty required field(s) across all rows")
+    if delivery["empty_recommended_fields"] > 0:
+        print(f"  WARNING: {delivery['empty_recommended_fields']} empty recommended field(s) across all rows")
+    print(f"  delivery_ready: {'YES' if delivery['delivery_ready'] else 'NO — review warnings above'}")
     return 0
 
 
@@ -2778,7 +2882,6 @@ NAMING_REPLACE_FIELDS = {"scene", "characters", "location", "event", "important_
 def apply_naming_to_json_structured(payload: dict[str, Any], mappings: dict[str, str]) -> tuple[dict[str, Any], int]:
     """Apply naming overrides only to whitelisted fields in rows. Returns (new_payload, change_count).
     Replacements are applied longest-key-first to avoid substring collisions."""
-    import copy
     result = copy.deepcopy(payload)
     changes = 0
     sorted_mappings = sorted(mappings.items(), key=lambda kv: len(kv[0]), reverse=True)
@@ -2876,15 +2979,44 @@ def cmd_apply_naming(args: argparse.Namespace) -> int:
 # Naming table derivation
 # ---------------------------------------------------------------------------
 
-# Fields that may contain temp: markers, grouped by naming category
+# Fields that may contain temp: markers, grouped by naming category.
+# This is the FALLBACK mapping used when the template does not declare
+# naming_field on its columns.  The primary source of truth is the
+# template JSON (naming_field=true).
 NAMING_CATEGORY_FIELDS: dict[str, list[str]] = {
     "characters": ["characters"],
     "scenes": ["scene", "location"],
-    "props": ["event", "important_dialogue", "director_note", "music_note"],
+    "props": [],  # Props should NOT be guessed from free-text fields
 }
 
-import re as _re
-_TEMP_MARKER_RE = _re.compile(r"temp:\s*[A-Za-z0-9\u4e00-\u9fff][\w\u4e00-\u9fff\-]*(?:\s+[\w\u4e00-\u9fff\-]+)*", _re.UNICODE)
+
+def _get_naming_fields_from_template(template: str) -> set[str]:
+    """Return the set of field names marked naming_field=true in the template.
+    Falls back to the hardcoded NAMING_CATEGORY_FIELDS keys if the template
+    has no naming_field metadata."""
+    tmpl = _TEMPLATE_REGISTRY.get(template)
+    if tmpl and "columns" in tmpl:
+        fields = {
+            col["field"] for col in tmpl["columns"]
+            if isinstance(col, dict) and col.get("naming_field")
+        }
+        if fields:
+            return fields
+    # Fallback
+    result: set[str] = set()
+    for field_list in NAMING_CATEGORY_FIELDS.values():
+        result.update(field_list)
+    return result
+
+# Regex for temp: markers.  Matches "temp: Girl-A", "temp: Dr. Smith",
+# "temp: O'Brien", CJK names, etc.  Stops at punctuation that signals
+# the start of a verb phrase (avoids "temp: Girl-A enters" false positive).
+_TEMP_MARKER_RE = re.compile(
+    r"temp:\s*[A-Za-z0-9\u4e00-\u9fff]"           # must start with alnum / CJK
+    r"[\w\u4e00-\u9fff.'\-]*"                       # word chars, dots, apostrophes, hyphens
+    r"(?:\s+[A-Z\u4e00-\u9fff][\w\u4e00-\u9fff.'\-]*)*",  # additional capitalized / CJK words
+    re.UNICODE,
+)
 
 
 def extract_temp_markers(text: str) -> list[str]:
@@ -2900,9 +3032,27 @@ def derive_naming_tables_from_rows(
 ) -> dict[str, list[dict[str, Any]]]:
     """Scan rows for temp: markers, deduplicate, and aggregate block references.
 
+    Only fields marked naming_field=true in the template are scanned (with a
+    fallback to NAMING_CATEGORY_FIELDS for backward compat).  This prevents
+    false positives from free-text descriptive fields like 'event'.
+
     Returns: {"characters": [...], "scenes": [...], "props": [...]}
     Each entry: {"temporary_name": ..., "appears_in_blocks": [...], "evidence": ..., "confidence": "low"}
     """
+    # Determine which fields to scan for naming markers
+    naming_fields = _get_naming_fields_from_template(template)
+
+    # Build a field -> category mapping from template or fallback
+    field_to_category: dict[str, str] = {}
+    for category, fields in NAMING_CATEGORY_FIELDS.items():
+        for f in fields:
+            if f in naming_fields:
+                field_to_category[f] = category
+    # Any naming_field not in the fallback map goes to "scenes" (safe default)
+    for f in naming_fields:
+        if f not in field_to_category:
+            field_to_category[f] = "scenes"
+
     # category -> { marker_text -> set of block IDs }
     category_map: dict[str, dict[str, set[str]]] = {
         "characters": {},
@@ -2912,17 +3062,16 @@ def derive_naming_tables_from_rows(
 
     for row in rows:
         block_id = row.get("shot_block", "?")
-        for category, fields in NAMING_CATEGORY_FIELDS.items():
-            for field in fields:
-                value = row.get(field, "")
-                if not value:
-                    continue
-                markers = extract_temp_markers(value)
-                for marker in markers:
-                    normalized = marker.strip()
-                    if normalized not in category_map[category]:
-                        category_map[category][normalized] = set()
-                    category_map[category][normalized].add(block_id)
+        for field, category in field_to_category.items():
+            value = row.get(field, "")
+            if not value:
+                continue
+            markers = extract_temp_markers(value)
+            for marker in markers:
+                normalized = marker.strip()
+                if normalized not in category_map[category]:
+                    category_map[category][normalized] = set()
+                category_map[category][normalized].add(block_id)
 
     # Build structured output
     result: dict[str, list[dict[str, Any]]] = {}
@@ -3046,7 +3195,6 @@ def cmd_derive_naming_tables(args: argparse.Namespace) -> int:
 
             # Replace existing naming confirmation tables section if present
             # Look for "## Naming Confirmation Tables" ... next "## " section
-            import re
             pattern = r"## Naming Confirmation Tables\n.*?(?=\n## |\Z)"
             if re.search(pattern, md_content, re.DOTALL):
                 md_content = re.sub(pattern, new_tables_md.rstrip(), md_content, count=1, flags=re.DOTALL)
@@ -3099,8 +3247,8 @@ MOTION_ALIASES: dict[str, str] = {
     "panning": "pan",
 }
 
-_VISUAL_HINT_RE = _re.compile(r"\[visual:\s*[^\]]*\]\s*")
-_OCR_HINT_RE = _re.compile(r"\[OCR detected:\s*[^\]]*\]\s*")
+_VISUAL_HINT_RE = re.compile(r"\[visual:\s*[^\]]*\]\s*")
+_OCR_HINT_RE = re.compile(r"\[OCR detected:\s*[^\]]*\]\s*")
 
 
 def normalize_shot_size(value: str) -> tuple[str, bool]:
@@ -3800,8 +3948,23 @@ def cmd_suggest_merges(args: argparse.Namespace) -> int:
 
     threshold = float(args.threshold) if hasattr(args, "threshold") and args.threshold else 0.65
 
-    # Determine segmentation strategy from template
-    template_name = getattr(args, "template", None) or analysis.get("template") or "production"
+    # Determine segmentation strategy from template.
+    # Priority: --template CLI arg > draft_fill.json in same dir > "production" fallback.
+    # Note: analysis.json is intentionally template-neutral (scan-video doesn't
+    # know which template will be used), so we check draft_fill.json which is
+    # created by draft-from-analysis and records the chosen template.
+    template_name = getattr(args, "template", None)
+    if not template_name:
+        # Try to discover template from draft_fill.json in the same directory
+        draft_fill_path = analysis_path.parent / "draft_fill.json"
+        if draft_fill_path.exists():
+            try:
+                draft_fill = json.loads(draft_fill_path.read_text(encoding="utf-8"))
+                template_name = draft_fill.get("template")
+            except Exception:
+                pass
+    if not template_name:
+        template_name = "production"
     seg = get_template_segmentation(template_name)
     strategy = seg.get("strategy", "scene-cut") if seg else "scene-cut"
 
@@ -4003,10 +4166,9 @@ def cmd_save_template(args: argparse.Namespace) -> int:
 
     data = json.loads(input_path.read_text(encoding="utf-8"))
 
-    # Validate
-    if args.validate or True:  # Always validate
-        errors = validate_template_json(data)
-        if errors:
+    # Validate (always — template integrity is non-negotiable)
+    errors = validate_template_json(data)
+    if errors:
             print("=== Template validation FAILED ===", file=sys.stderr)
             for e in errors:
                 print(f"  ✗ {e}", file=sys.stderr)
