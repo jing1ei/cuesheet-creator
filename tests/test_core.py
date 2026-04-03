@@ -981,6 +981,141 @@ def test_apply_naming_longest_key_first():
 
 
 # ---------------------------------------------------------------------------
+# 10. derive-naming-tables
+# ---------------------------------------------------------------------------
+
+def test_derive_naming_tables_extracts_temp_markers():
+    """derive-naming-tables should find temp: markers and group by category."""
+    import argparse
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        draft_fill = {
+            "template": "production",
+            "video_title": "test",
+            "source_path": "",
+            "fill_status": "complete",
+            "rows": [
+                {
+                    "shot_block": "A1", "start_time": "00:00:00.000",
+                    "end_time": "00:00:05.000", "keyframe": "",
+                    "shot_size": "WS", "angle_or_lens": "front",
+                    "motion": "static", "scene": "temp: Main Hall",
+                    "mood": "calm", "location": "interior temp: Main Hall",
+                    "characters": "temp: Girl-A; temp: Boy-B",
+                    "event": "temp: Girl-A enters",
+                    "important_dialogue": "", "music_note": "",
+                    "director_note": "", "confidence": "high",
+                    "needs_confirmation": "",
+                },
+                {
+                    "shot_block": "A2", "start_time": "00:00:05.000",
+                    "end_time": "00:00:10.000", "keyframe": "",
+                    "shot_size": "CU", "angle_or_lens": "front",
+                    "motion": "static", "scene": "temp: Main Hall",
+                    "mood": "tense", "location": "interior temp: Main Hall",
+                    "characters": "temp: Girl-A",
+                    "event": "Close-up on temp: Girl-A",
+                    "important_dialogue": "", "music_note": "",
+                    "director_note": "", "confidence": "high",
+                    "needs_confirmation": "",
+                },
+            ],
+        }
+        fill_path = Path(tmpdir) / "draft_fill.json"
+        fill_path.write_text(json.dumps(draft_fill), encoding="utf-8")
+
+        out_path = Path(tmpdir) / "naming_tables.json"
+        args = argparse.Namespace(
+            source_json=str(fill_path),
+            output=str(out_path),
+            md=None,
+        )
+        result = cc.cmd_derive_naming_tables(args)
+        assert result == 0, "derive-naming-tables should succeed"
+
+        tables = json.loads(out_path.read_text(encoding="utf-8"))
+        chars = tables["tables"]["characters"]
+        scenes = tables["tables"]["scenes"]
+
+        # Girl-A should appear in both A1 and A2
+        girl_a = next((c for c in chars if "Girl-A" in c["temporary_name"]), None)
+        assert girl_a is not None, f"temp: Girl-A not found in characters: {chars}"
+        assert "A1" in girl_a["appears_in_blocks"] and "A2" in girl_a["appears_in_blocks"], (
+            f"Girl-A should appear in A1 and A2, got: {girl_a['appears_in_blocks']}"
+        )
+
+        # Boy-B should appear only in A1
+        boy_b = next((c for c in chars if "Boy-B" in c["temporary_name"]), None)
+        assert boy_b is not None, f"temp: Boy-B not found in characters: {chars}"
+        assert boy_b["appears_in_blocks"] == ["A1"], (
+            f"Boy-B should appear only in A1, got: {boy_b['appears_in_blocks']}"
+        )
+
+        # Main Hall in scenes
+        main_hall = next((s for s in scenes if "Main Hall" in s["temporary_name"]), None)
+        assert main_hall is not None, f"temp: Main Hall not found in scenes: {scenes}"
+        assert set(main_hall["appears_in_blocks"]) == {"A1", "A2"}
+
+        assert tables["total_temp_markers"] >= 3, (
+            f"Expected at least 3 unique markers, got {tables['total_temp_markers']}"
+        )
+
+
+def test_derive_naming_tables_updates_markdown():
+    """derive-naming-tables should replace naming tables section in cue_sheet.md."""
+    import argparse
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        draft_fill = {
+            "template": "production",
+            "fill_status": "complete",
+            "rows": [{
+                "shot_block": "A1", "start_time": "00:00:00.000",
+                "end_time": "00:00:05.000", "keyframe": "",
+                "characters": "temp: Girl-A",
+                "scene": "temp: Main Hall",
+                "shot_size": "", "angle_or_lens": "", "motion": "",
+                "mood": "", "location": "", "event": "",
+                "important_dialogue": "", "music_note": "",
+                "director_note": "", "confidence": "", "needs_confirmation": "",
+            }],
+        }
+        fill_path = Path(tmpdir) / "draft_fill.json"
+        fill_path.write_text(json.dumps(draft_fill), encoding="utf-8")
+
+        # Create a cue_sheet.md with placeholder naming tables
+        md_path = Path(tmpdir) / "cue_sheet.md"
+        md_path.write_text(
+            "# Cue Sheet\n\n"
+            "## Naming Confirmation Tables\n\n"
+            "### Characters\n\n"
+            "| temporary_name | evidence | confidence | confirmed_name | status |\n"
+            "|---|---|---|---|---|\n"
+            "| temp: Character-A | placeholder | low |  | pending |\n\n"
+            "## Pending Questions\n\n"
+            "- Do characters have official names?\n",
+            encoding="utf-8",
+        )
+
+        out_path = Path(tmpdir) / "naming_tables.json"
+        args = argparse.Namespace(
+            source_json=str(fill_path),
+            output=str(out_path),
+            md=str(md_path),
+        )
+        cc.cmd_derive_naming_tables(args)
+
+        updated_md = md_path.read_text(encoding="utf-8")
+        # Should now contain actual derived names, not placeholders
+        assert "temp: Girl-A" in updated_md, "Derived temp: Girl-A should be in MD"
+        assert "temp: Main Hall" in updated_md, "Derived temp: Main Hall should be in MD"
+        # Placeholder should be gone
+        assert "temp: Character-A" not in updated_md, "Old placeholder should be replaced"
+        # Pending Questions section should still exist
+        assert "## Pending Questions" in updated_md, "Pending Questions should be preserved"
+
+
+# ---------------------------------------------------------------------------
 # Runner (standalone, no pytest required)
 # ---------------------------------------------------------------------------
 

@@ -2656,6 +2656,209 @@ def cmd_apply_naming(args: argparse.Namespace) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# Naming table derivation
+# ---------------------------------------------------------------------------
+
+# Fields that may contain temp: markers, grouped by naming category
+NAMING_CATEGORY_FIELDS: dict[str, list[str]] = {
+    "characters": ["characters"],
+    "scenes": ["scene", "location"],
+    "props": ["event", "important_dialogue", "director_note", "music_note"],
+}
+
+import re as _re
+_TEMP_MARKER_RE = _re.compile(r"temp:\s*[A-Za-z0-9\u4e00-\u9fff][\w\u4e00-\u9fff\-]*(?:\s+[\w\u4e00-\u9fff\-]+)*", _re.UNICODE)
+
+
+def extract_temp_markers(text: str) -> list[str]:
+    """Extract all 'temp: XYZ' markers from a text string."""
+    if not text or "temp:" not in text.lower():
+        return []
+    return _TEMP_MARKER_RE.findall(text)
+
+
+def derive_naming_tables_from_rows(
+    rows: list[dict[str, Any]],
+    template: str = "production",
+) -> dict[str, list[dict[str, Any]]]:
+    """Scan rows for temp: markers, deduplicate, and aggregate block references.
+
+    Returns: {"characters": [...], "scenes": [...], "props": [...]}
+    Each entry: {"temporary_name": ..., "appears_in_blocks": [...], "evidence": ..., "confidence": "low"}
+    """
+    # category -> { marker_text -> set of block IDs }
+    category_map: dict[str, dict[str, set[str]]] = {
+        "characters": {},
+        "scenes": {},
+        "props": {},
+    }
+
+    for row in rows:
+        block_id = row.get("shot_block", "?")
+        for category, fields in NAMING_CATEGORY_FIELDS.items():
+            for field in fields:
+                value = row.get(field, "")
+                if not value:
+                    continue
+                markers = extract_temp_markers(value)
+                for marker in markers:
+                    normalized = marker.strip()
+                    if normalized not in category_map[category]:
+                        category_map[category][normalized] = set()
+                    category_map[category][normalized].add(block_id)
+
+    # Build structured output
+    result: dict[str, list[dict[str, Any]]] = {}
+    for category in ("characters", "scenes", "props"):
+        entries: list[dict[str, Any]] = []
+        for marker, block_ids in sorted(category_map[category].items()):
+            sorted_blocks = sorted(block_ids, key=lambda b: (len(b), b))
+            entries.append({
+                "temporary_name": marker,
+                "appears_in_blocks": sorted_blocks,
+                "evidence": f"Found in {len(sorted_blocks)} block(s): {', '.join(sorted_blocks)}",
+                "confidence": "low",
+                "confirmed_name": "",
+                "status": "pending",
+            })
+        result[category] = entries
+
+    return result
+
+
+def format_naming_tables_md(tables: dict[str, list[dict[str, Any]]]) -> str:
+    """Format naming tables as Markdown sections."""
+    lines: list[str] = []
+
+    lines.append("## Naming Confirmation Tables")
+    lines.append("")
+
+    lines.append("### Characters")
+    lines.append("")
+    lines.append("| temporary_name | appears_in_blocks | evidence | confidence | confirmed_name | status |")
+    lines.append("|---|---|---|---|---|---|")
+    for entry in tables.get("characters", []):
+        lines.append(
+            f"| {entry['temporary_name']} "
+            f"| {', '.join(entry['appears_in_blocks'])} "
+            f"| {entry['evidence']} "
+            f"| {entry['confidence']} "
+            f"| {entry['confirmed_name']} "
+            f"| {entry['status']} |"
+        )
+    if not tables.get("characters"):
+        lines.append("| *(none detected)* | | | | | |")
+    lines.append("")
+
+    lines.append("### Scenes / Setups")
+    lines.append("")
+    lines.append("| temporary_name | appears_in_blocks | evidence | confidence | confirmed_name | status |")
+    lines.append("|---|---|---|---|---|---|")
+    for entry in tables.get("scenes", []):
+        lines.append(
+            f"| {entry['temporary_name']} "
+            f"| {', '.join(entry['appears_in_blocks'])} "
+            f"| {entry['evidence']} "
+            f"| {entry['confidence']} "
+            f"| {entry['confirmed_name']} "
+            f"| {entry['status']} |"
+        )
+    if not tables.get("scenes"):
+        lines.append("| *(none detected)* | | | | | |")
+    lines.append("")
+
+    lines.append("### Props")
+    lines.append("")
+    lines.append("| temporary_name | appears_in_blocks | evidence | confidence | confirmed_name | status |")
+    lines.append("|---|---|---|---|---|---|")
+    for entry in tables.get("props", []):
+        lines.append(
+            f"| {entry['temporary_name']} "
+            f"| {', '.join(entry['appears_in_blocks'])} "
+            f"| {entry['evidence']} "
+            f"| {entry['confidence']} "
+            f"| {entry['confirmed_name']} "
+            f"| {entry['status']} |"
+        )
+    if not tables.get("props"):
+        lines.append("| *(none detected)* | | | | | |")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+def cmd_derive_naming_tables(args: argparse.Namespace) -> int:
+    """Scan a filled draft_fill.json for temp: markers and generate naming_tables.json
+    + optionally update cue_sheet.md with derived naming confirmation tables."""
+    source_path = Path(args.source_json)
+    if not source_path.exists():
+        raise FileNotFoundError(f"Source JSON not found: {source_path}")
+
+    source = json.loads(source_path.read_text(encoding="utf-8"))
+    rows = source.get("rows", [])
+    template = source.get("template", "production")
+
+    if not rows:
+        print("WARNING: No rows found in source JSON.", file=sys.stderr)
+
+    tables = derive_naming_tables_from_rows(rows, template)
+
+    # Count total markers found
+    total = sum(len(entries) for entries in tables.values())
+
+    # Output naming_tables.json
+    output_path = Path(args.output)
+    output_data = {
+        "generated_at": dt.datetime.now().isoformat(timespec="seconds"),
+        "source": str(source_path),
+        "template": template,
+        "total_temp_markers": total,
+        "tables": tables,
+    }
+    write_json(output_path, output_data)
+    print(f"Naming tables: {output_path} ({total} temp marker(s) found)")
+
+    # Optionally update cue_sheet.md
+    if args.md:
+        md_path = Path(args.md)
+        if not md_path.exists():
+            print(f"WARNING: Markdown file not found: {md_path}", file=sys.stderr)
+        else:
+            md_content = md_path.read_text(encoding="utf-8")
+            new_tables_md = format_naming_tables_md(tables)
+
+            # Replace existing naming confirmation tables section if present
+            # Look for "## Naming Confirmation Tables" ... next "## " section
+            import re
+            pattern = r"## Naming Confirmation Tables\n.*?(?=\n## |\Z)"
+            if re.search(pattern, md_content, re.DOTALL):
+                md_content = re.sub(pattern, new_tables_md.rstrip(), md_content, count=1, flags=re.DOTALL)
+            else:
+                # Append before "## Pending Questions" or at end
+                pending_match = re.search(r"\n## Pending Questions", md_content)
+                if pending_match:
+                    md_content = (
+                        md_content[:pending_match.start()]
+                        + "\n" + new_tables_md + "\n"
+                        + md_content[pending_match.start():]
+                    )
+                else:
+                    md_content = md_content.rstrip() + "\n\n" + new_tables_md
+
+            md_path.write_text(md_content, encoding="utf-8")
+            print(f"Updated: {md_path}")
+
+    # Summary
+    for cat in ("characters", "scenes", "props"):
+        count = len(tables.get(cat, []))
+        if count:
+            items = ", ".join(e["temporary_name"] for e in tables[cat])
+            print(f"  {cat}: {count} ({items})")
+
+    return 0
+
+
 def cmd_merge_blocks(args: argparse.Namespace) -> int:
     analysis_path = Path(args.analysis_json)
     if not analysis_path.exists():
@@ -3295,6 +3498,12 @@ def build_parser() -> argparse.ArgumentParser:
     apply_naming.add_argument("--dry-run", action="store_true", help="Preview changes without writing files")
     apply_naming.add_argument("--report-out", type=resolved_path, help="Write replacement report JSON")
     apply_naming.set_defaults(func=cmd_apply_naming)
+
+    derive_naming = subparsers.add_parser("derive-naming-tables", help="Scan filled draft_fill.json for temp: markers and generate naming confirmation tables")
+    derive_naming.add_argument("--source-json", type=resolved_path, required=True, help="Filled draft_fill.json (or any JSON with rows containing temp: markers)")
+    derive_naming.add_argument("--output", type=resolved_path, required=True, help="Output naming_tables.json path")
+    derive_naming.add_argument("--md", type=resolved_path, help="cue_sheet.md to update with derived naming tables (optional)")
+    derive_naming.set_defaults(func=cmd_derive_naming_tables)
 
     merge = subparsers.add_parser("merge-blocks", help="Merge draft blocks based on a merge plan")
     merge.add_argument("--analysis-json", type=resolved_path, required=True, help="Path to analysis.json")
