@@ -2859,6 +2859,247 @@ def cmd_derive_naming_tables(args: argparse.Namespace) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# LLM output normalize / lint
+# ---------------------------------------------------------------------------
+
+SHOT_SIZE_ENUM = {"WS", "MS", "CU", "EWS", "ECU"}
+SHOT_SIZE_ALIASES: dict[str, str] = {
+    "wide shot": "WS", "wide": "WS",
+    "medium shot": "MS", "medium": "MS", "mid": "MS", "mid shot": "MS",
+    "close-up": "CU", "close up": "CU", "closeup": "CU", "cu": "CU",
+    "extreme wide shot": "EWS", "extreme wide": "EWS",
+    "extreme close-up": "ECU", "extreme close up": "ECU", "extreme closeup": "ECU",
+    "ws": "WS", "ms": "MS", "ews": "EWS", "ecu": "ECU",
+}
+
+MOTION_ENUM = {"static", "push-in", "pull-out", "pan", "tracking", "handheld"}
+MOTION_ALIASES: dict[str, str] = {
+    "push in": "push-in", "pushin": "push-in",
+    "pull out": "pull-out", "pullout": "pull-out",
+    "track": "tracking", "dolly": "tracking",
+    "hand-held": "handheld", "hand held": "handheld",
+    "still": "static", "locked": "static", "fixed": "static",
+    "panning": "pan",
+}
+
+_VISUAL_HINT_RE = _re.compile(r"\[visual:\s*[^\]]*\]\s*")
+_OCR_HINT_RE = _re.compile(r"\[OCR detected:\s*[^\]]*\]\s*")
+
+
+def normalize_shot_size(value: str) -> tuple[str, bool]:
+    """Normalize shot_size to enum value. Returns (normalized, was_changed)."""
+    stripped = value.strip()
+    if not stripped:
+        return stripped, False
+    upper = stripped.upper()
+    if upper in SHOT_SIZE_ENUM:
+        if stripped != upper:
+            return upper, True
+        return stripped, False
+    lower = stripped.lower()
+    if lower in SHOT_SIZE_ALIASES:
+        return SHOT_SIZE_ALIASES[lower], True
+    # Try matching with extra text like "WS (wide shot)"
+    for enum_val in SHOT_SIZE_ENUM:
+        if upper.startswith(enum_val):
+            return enum_val, True
+    return stripped, False
+
+
+def normalize_motion(value: str) -> tuple[str, bool]:
+    """Normalize motion to enum value. Returns (normalized, was_changed)."""
+    stripped = value.strip()
+    if not stripped:
+        return stripped, False
+    lower = stripped.lower()
+    if lower in MOTION_ENUM:
+        if stripped != lower:
+            return lower, True
+        return stripped, False
+    if lower in MOTION_ALIASES:
+        return MOTION_ALIASES[lower], True
+    # Partial match: "slow push-in" -> "push-in"
+    for enum_val in MOTION_ENUM:
+        if enum_val in lower:
+            return enum_val, True
+    return stripped, False
+
+
+def strip_hint_prefixes(value: str) -> tuple[str, bool]:
+    """Remove [visual: ...] and [OCR detected: ...] hint prefixes."""
+    if not value:
+        return value, False
+    cleaned = _VISUAL_HINT_RE.sub("", value)
+    cleaned = _OCR_HINT_RE.sub("", cleaned)
+    cleaned = cleaned.strip()
+    return cleaned, cleaned != value.strip()
+
+
+def cmd_normalize_fill(args: argparse.Namespace) -> int:
+    """Normalize / lint a filled draft_fill.json or final_cues.json.
+
+    Modes:
+    - lint (default): report issues without modifying the file
+    - fix: auto-normalize + report, write output
+    """
+    source_path = Path(args.source_json)
+    if not source_path.exists():
+        raise FileNotFoundError(f"Source JSON not found: {source_path}")
+
+    source = json.loads(source_path.read_text(encoding="utf-8"))
+    rows = source.get("rows", [])
+    template = source.get("template", "production")
+    fix_mode = bool(args.fix)
+
+    issues: list[dict[str, Any]] = []
+    fixes_applied: list[dict[str, Any]] = []
+
+    columns = TEMPLATE_COLUMNS.get(template, TEMPLATE_COLUMNS["production"])
+
+    for row in rows:
+        block_id = row.get("shot_block", "?")
+
+        # 1. Normalize shot_size
+        if "shot_size" in row and row["shot_size"]:
+            normalized, changed = normalize_shot_size(row["shot_size"])
+            if changed:
+                fix_rec = {
+                    "block": block_id, "field": "shot_size",
+                    "old": row["shot_size"], "new": normalized,
+                    "type": "normalize",
+                }
+                if fix_mode:
+                    row["shot_size"] = normalized
+                    fixes_applied.append(fix_rec)
+                else:
+                    issues.append({**fix_rec, "severity": "fixable"})
+            elif row["shot_size"].strip() and row["shot_size"].upper() not in SHOT_SIZE_ENUM:
+                issues.append({
+                    "block": block_id, "field": "shot_size",
+                    "value": row["shot_size"],
+                    "type": "unknown_enum",
+                    "severity": "warning",
+                    "message": f"shot_size '{row['shot_size']}' not in enum: {', '.join(sorted(SHOT_SIZE_ENUM))}",
+                })
+
+        # 2. Normalize motion
+        if "motion" in row and row["motion"]:
+            normalized, changed = normalize_motion(row["motion"])
+            if changed:
+                fix_rec = {
+                    "block": block_id, "field": "motion",
+                    "old": row["motion"], "new": normalized,
+                    "type": "normalize",
+                }
+                if fix_mode:
+                    row["motion"] = normalized
+                    fixes_applied.append(fix_rec)
+                else:
+                    issues.append({**fix_rec, "severity": "fixable"})
+
+        # 3. Strip [visual: ...] and [OCR detected: ...] hint prefixes
+        for field in columns:
+            value = row.get(field, "")
+            if not isinstance(value, str):
+                continue
+            cleaned, changed = strip_hint_prefixes(value)
+            if changed:
+                fix_rec = {
+                    "block": block_id, "field": field,
+                    "old": value[:80], "new": cleaned[:80],
+                    "type": "strip_hint",
+                }
+                if fix_mode:
+                    row[field] = cleaned
+                    fixes_applied.append(fix_rec)
+                else:
+                    issues.append({**fix_rec, "severity": "fixable"})
+
+        # 4. Check temp: markers vs needs_confirmation
+        needs_conf = str(row.get("needs_confirmation", "")).lower()
+        naming_fields = ("scene", "characters", "location")
+        for nf in naming_fields:
+            value = str(row.get(nf, ""))
+            markers = extract_temp_markers(value)
+            for marker in markers:
+                # Check if the marker (or a recognizable fragment) appears in needs_confirmation
+                marker_key = marker.replace("temp:", "").strip().lower()
+                if marker_key and marker_key not in needs_conf and "temp:" not in needs_conf:
+                    issues.append({
+                        "block": block_id, "field": nf,
+                        "type": "orphaned_temp_marker",
+                        "severity": "warning",
+                        "message": f"'{marker}' in '{nf}' has no matching entry in needs_confirmation",
+                    })
+
+        # 5. Report empty required fields
+        RECOMMENDED_FIELDS: dict[str, list[str]] = {
+            "production": ["scene", "event", "shot_size", "mood", "characters"],
+            "music-director": ["mood", "event", "music_note", "rhythm_change", "dynamics"],
+            "script": ["scene", "event", "characters", "location"],
+        }
+        for rec_field in RECOMMENDED_FIELDS.get(template, []):
+            if rec_field in set(columns) and not str(row.get(rec_field, "")).strip():
+                issues.append({
+                    "block": block_id, "field": rec_field,
+                    "type": "empty_required",
+                    "severity": "warning",
+                    "message": f"Recommended field '{rec_field}' is empty",
+                })
+
+    # Build report
+    report = {
+        "generated_at": dt.datetime.now().isoformat(timespec="seconds"),
+        "source": str(source_path),
+        "template": template,
+        "mode": "fix" if fix_mode else "lint",
+        "total_rows": len(rows),
+        "issues": issues,
+        "fixes_applied": fixes_applied,
+        "summary": {
+            "fixable": len([i for i in issues if i.get("severity") == "fixable"]),
+            "warnings": len([i for i in issues if i.get("severity") == "warning"]),
+            "fixes_applied": len(fixes_applied),
+        },
+    }
+
+    # Write output
+    if fix_mode:
+        out_path = Path(args.output) if args.output else source_path
+        write_json(out_path, source)
+        print(f"Fixed: {out_path} ({len(fixes_applied)} fix(es) applied)")
+
+    if args.report_out:
+        write_json(Path(args.report_out), report)
+
+    # Print summary
+    mode_label = "fix" if fix_mode else "lint"
+    print(f"=== normalize-fill ({mode_label}, {template}) ===")
+    print(f"Rows: {len(rows)}")
+    if fixes_applied:
+        print(f"Fixes applied: {len(fixes_applied)}")
+        for f in fixes_applied[:10]:
+            print(f"  {f['block']}.{f['field']}: '{f['old']}' -> '{f['new']}'")
+        if len(fixes_applied) > 10:
+            print(f"  ... and {len(fixes_applied) - 10} more")
+    if issues:
+        fixable = [i for i in issues if i.get("severity") == "fixable"]
+        warnings = [i for i in issues if i.get("severity") == "warning"]
+        if fixable:
+            print(f"Fixable issues: {len(fixable)} (run with --fix to auto-normalize)")
+            for i in fixable[:5]:
+                print(f"  {i['block']}.{i['field']}: '{i.get('old', '')}' -> '{i.get('new', '')}'")
+        if warnings:
+            print(f"Warnings: {len(warnings)}")
+            for i in warnings[:10]:
+                print(f"  {i['block']}.{i['field']}: {i.get('message', i.get('type', ''))}")
+    if not issues and not fixes_applied:
+        print("  No issues found.")
+
+    return 0
+
+
 def cmd_merge_blocks(args: argparse.Namespace) -> int:
     analysis_path = Path(args.analysis_json)
     if not analysis_path.exists():
@@ -3504,6 +3745,13 @@ def build_parser() -> argparse.ArgumentParser:
     derive_naming.add_argument("--output", type=resolved_path, required=True, help="Output naming_tables.json path")
     derive_naming.add_argument("--md", type=resolved_path, help="cue_sheet.md to update with derived naming tables (optional)")
     derive_naming.set_defaults(func=cmd_derive_naming_tables)
+
+    normalize = subparsers.add_parser("normalize-fill", help="Normalize/lint LLM-filled JSON: standardize enums, strip hint prefixes, check temp markers")
+    normalize.add_argument("--source-json", type=resolved_path, required=True, help="Filled draft_fill.json or final_cues.json")
+    normalize.add_argument("--fix", action="store_true", help="Auto-normalize and write output (default: lint-only, report issues)")
+    normalize.add_argument("--output", type=resolved_path, help="Output path for fixed JSON (default: overwrite source)")
+    normalize.add_argument("--report-out", type=resolved_path, help="Write normalize report JSON")
+    normalize.set_defaults(func=cmd_normalize_fill)
 
     merge = subparsers.add_parser("merge-blocks", help="Merge draft blocks based on a merge plan")
     merge.add_argument("--analysis-json", type=resolved_path, required=True, help="Path to analysis.json")

@@ -1116,6 +1116,108 @@ def test_derive_naming_tables_updates_markdown():
 
 
 # ---------------------------------------------------------------------------
+# 11. normalize-fill
+# ---------------------------------------------------------------------------
+
+def test_normalize_fill_lint_mode():
+    """normalize-fill in lint mode should report issues without modifying the file."""
+    import argparse
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        source = {
+            "template": "production",
+            "fill_status": "complete",
+            "rows": [{
+                "shot_block": "A1", "start_time": "00:00:00.000",
+                "end_time": "00:00:05.000", "keyframe": "",
+                "shot_size": "wide shot",  # should normalize to WS
+                "angle_or_lens": "front",
+                "motion": "Push In",  # should normalize to push-in
+                "scene": "temp: Main Hall",
+                "mood": "[visual: dark tones, cool color] tense",  # has hint prefix
+                "location": "interior",
+                "characters": "temp: Girl-A",
+                "event": "Test event",
+                "important_dialogue": "[OCR detected: GAME OVER] overlay",  # has hint
+                "music_note": "", "director_note": "",
+                "confidence": "high",
+                "needs_confirmation": "",  # missing for temp markers!
+            }],
+        }
+        source_path = Path(tmpdir) / "draft_fill.json"
+        original = json.dumps(source, ensure_ascii=False, indent=2)
+        source_path.write_text(original, encoding="utf-8")
+
+        report_path = Path(tmpdir) / "report.json"
+        args = argparse.Namespace(
+            source_json=str(source_path),
+            fix=False,
+            output=None,
+            report_out=str(report_path),
+        )
+        result = cc.cmd_normalize_fill(args)
+        assert result == 0
+
+        # Source should NOT be modified
+        assert source_path.read_text(encoding="utf-8") == original, "lint mode should not modify file"
+
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        assert report["mode"] == "lint"
+        # Should have fixable issues for shot_size, motion, and hint prefixes
+        fixable = [i for i in report["issues"] if i.get("severity") == "fixable"]
+        assert len(fixable) >= 3, f"Expected at least 3 fixable issues, got {len(fixable)}"
+        # Should have warnings for orphaned temp markers
+        warnings = [i for i in report["issues"] if i.get("type") == "orphaned_temp_marker"]
+        assert len(warnings) >= 1, f"Expected orphaned_temp_marker warnings, got {len(warnings)}"
+
+
+def test_normalize_fill_fix_mode():
+    """normalize-fill --fix should auto-normalize enums and strip hints."""
+    import argparse
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        source = {
+            "template": "production",
+            "fill_status": "complete",
+            "rows": [{
+                "shot_block": "A1", "start_time": "00:00:00.000",
+                "end_time": "00:00:05.000", "keyframe": "",
+                "shot_size": "Close-Up",
+                "angle_or_lens": "front",
+                "motion": "hand held",
+                "scene": "test",
+                "mood": "[visual: mid tones] calm and steady",
+                "location": "studio",
+                "characters": "Actor",
+                "event": "Test event",
+                "important_dialogue": "",
+                "music_note": "", "director_note": "",
+                "confidence": "high",
+                "needs_confirmation": "",
+            }],
+        }
+        source_path = Path(tmpdir) / "draft_fill.json"
+        source_path.write_text(json.dumps(source), encoding="utf-8")
+
+        out_path = Path(tmpdir) / "fixed.json"
+        args = argparse.Namespace(
+            source_json=str(source_path),
+            fix=True,
+            output=str(out_path),
+            report_out=None,
+        )
+        result = cc.cmd_normalize_fill(args)
+        assert result == 0
+
+        fixed = json.loads(out_path.read_text(encoding="utf-8"))
+        row = fixed["rows"][0]
+        assert row["shot_size"] == "CU", f"shot_size should be CU, got '{row['shot_size']}'"
+        assert row["motion"] == "handheld", f"motion should be handheld, got '{row['motion']}'"
+        assert "[visual:" not in row["mood"], f"[visual:] hint should be stripped from mood: '{row['mood']}'"
+        assert "calm" in row["mood"], f"mood content should be preserved: '{row['mood']}'"
+
+
+# ---------------------------------------------------------------------------
 # Runner (standalone, no pytest required)
 # ---------------------------------------------------------------------------
 
