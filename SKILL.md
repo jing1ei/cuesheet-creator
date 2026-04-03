@@ -55,9 +55,10 @@ Everything else has sensible defaults. If the user provides only a video, the ag
 
 | File | Always? | Notes |
 |---|---|---|
-| `<out-dir>/analysis.json` | ✅ | Raw scan output — scene candidates, keyframes, ASR/OCR data |
+| `<out-dir>/analysis.json` | ✅ | Raw scan output — scene candidates, keyframes, ASR/OCR data. Contains `agent_summary` for compact LLM consumption. |
 | `<out-dir>/keyframes/*.jpg` | ✅ | Keyframe screenshots with sharpness scores |
 | `<out-dir>/cue_sheet.md` | ✅ | Markdown deliverable (draft in Phase A, final in Phase B) |
+| `<out-dir>/draft_fill.json` | ✅ | **JSON fill-in file** — LLM edits THIS instead of the Markdown table. Pre-populated with block IDs, times, keyframe paths; all content fields are empty strings for LLM to fill. |
 | `<out-dir>/final_cues.json` | ✅ | Structured cue data for export |
 | `<out-dir>/cue_sheet.xlsx` | ✅ | Excel deliverable with embedded keyframes (production template) |
 | `<out-dir>/audio.wav` | Only with `--asr` | Intermediate; safe to delete after analysis |
@@ -88,14 +89,20 @@ The agent **MAY proceed automatically** (no user confirmation needed) in these c
 
 ### Efficiency rules
 
-- **Step 3b (LLM fill-in)**: Read analysis.json + view keyframes in batches of 5-8 images. Fill ALL blocks in one writing pass. Do NOT loop one image at a time — this will exhaust token budget and step limits.
+- **Step 2 (scan-video)**: `analysis.json` now contains an `agent_summary` field — a compact overview with block IDs, keyframe paths grouped into batches, and ASR/OCR summaries. **Read `agent_summary` instead of the full `analysis.json`** to avoid exhausting token budget.
+- **Step 3b (LLM fill-in)**: Fill in `draft_fill.json` (a JSON file), NOT the Markdown table. View keyframes in batches of 5-8 images using the batch groups listed in `agent_summary.keyframe_batches`. Fill ALL blocks in one writing pass per batch. Do NOT loop one image at a time — this will exhaust token budget and step limits.
 - **Step 7 (Export)**: Run `build-xlsx` and `export-md` as single CLI commands. Do NOT manually embed images or generate Excel content in the conversation.
 
 ### Resume rules
 
 If the workflow is interrupted mid-session:
 
-1. **Check what already exists** in `<out-dir>/`: if `analysis.json` exists, skip scan-video. If `cue_sheet.md` exists, skip draft generation.
+1. **Check what already exists** in `<out-dir>/`:
+   - If `analysis.json` exists → skip scan-video.
+   - If `draft_fill.json` exists → check its `fill_status` field:
+     - `"pending"` → fill-in has NOT been done yet. Read `draft_fill.json` and continue filling.
+     - `"complete"` → fill-in is done. Proceed to naming confirmation (C2) or merge step.
+   - If `cue_sheet.md` exists but `draft_fill.json` does not → skeleton was generated but JSON fill-in file is missing. Re-run `draft-from-analysis` to regenerate both.
 2. **Re-read existing artifacts** before continuing — don't regenerate what's already there.
 3. **Re-running any command is safe** — all commands overwrite their output files without corrupting other artifacts in the same directory.
 4. **Naming confirmation state is NOT persisted** — if the session is interrupted after C2, ask again.
@@ -292,29 +299,39 @@ python scripts/cuesheet_creator.py scan-video --video <path> --out-dir <dir> --a
 
 **Keyframe scoring**: Every frame gets a Laplacian sharpness score. In scenedetect mode, automatically selects the sharpest frame near each cut point as the representative frame.
 
-Outputs `analysis.json` containing: video metadata, scene candidates, keyframe screenshots (with sharpness scores), draft block candidates, ASR speech segments (if enabled), OCR text detections (if enabled), analysis notes.
+Outputs `analysis.json` containing: video metadata, `agent_summary` (compact LLM overview), scene candidates, keyframe screenshots (with sharpness scores), draft block candidates, ASR speech segments (if enabled), OCR text detections (if enabled), analysis notes.
 
 ### Step 3: Form Phase A draft
 
-**Two steps: generate skeleton first, then LLM fills in content.**
+**Two steps: generate skeleton first, then LLM fills in content via JSON.**
 
-#### 3a. Generate skeleton draft
+#### 3a. Generate skeleton draft + JSON fill-in file
 
 ```bash
 python scripts/cuesheet_creator.py draft-from-analysis --analysis-json <out-dir>/analysis.json --output <out-dir>/cue_sheet.md --template production
 ```
 
-Skeleton includes: video info table, candidate segment table (time + cut reason), blank naming confirmation tables, pending questions list.
+This generates TWO files:
+- `cue_sheet.md` — Markdown skeleton with keyframe batch groups and fill-in guidance
+- `draft_fill.json` — **JSON fill-in file** (the primary file LLM should edit)
 
-#### 3b. LLM content fill-in (critical step)
+The JSON file has `fill_status: "partial"` (when pre-fills exist) or `"pending"` and contains rows with:
+- **Pre-populated**: `shot_block`, `start_time`, `end_time`, `keyframe`
+- **Auto-filled from data**: `important_dialogue` (from ASR time-overlap), `confidence` (from detection method + ASR coverage), `needs_confirmation` (standard items), `mood` hints (from visual features: tone, contrast, color temperature)
+- **OCR hints**: `director_note` or `event` may contain `[OCR detected: ...]` prefixes when on-screen text was found
+- **Empty for LLM**: all remaining content fields (scene, location, characters, event, shot_size, motion, etc.)
 
-> **IMPORTANT — Efficiency rule**: Do NOT process keyframes one-by-one in a loop. Instead:
-> 1. Read the skeleton draft (`cue_sheet.md`)
-> 2. Read `analysis.json` to get the full list of blocks, keyframe paths, and any ASR/OCR data
-> 3. View keyframe images in small batches (5-8 at a time) — not individually
-> 4. Fill in ALL blocks in one writing pass, outputting the complete updated Markdown
+#### 3b. LLM content fill-in (critical step — use JSON, not Markdown)
+
+> **CRITICAL — JSON fill-in workflow**: Edit `draft_fill.json`, NOT the Markdown table.
+> 1. Read `agent_summary` from `analysis.json` (NOT the full file — just the `agent_summary` field)
+> 2. View keyframe images in batches listed in `agent_summary.keyframe_batches` (5-8 at a time)
+> 3. For each batch, fill in ALL corresponding blocks in `draft_fill.json` in one write pass
+> 4. After ALL blocks are filled, update `fill_status` from `"pending"` to `"complete"`
 >
-> The goal is to minimize tool calls. A 20-block cue sheet should take 2-4 rounds, not 20.
+> **Why JSON instead of Markdown**: JSON fields avoid column-misalignment bugs from Markdown pipe characters. LLM can target specific fields without counting table columns. The filled JSON can feed directly into `build-final-skeleton` and `validate-cue-json`.
+>
+> The goal is to minimize tool calls. A 20-block cue sheet should take 2-4 rounds (one per keyframe batch), not 20.
 
 For each shot block, use the corresponding keyframe to fill in fields using these rules:
 
@@ -407,7 +424,27 @@ Note: JSON replacements are field-scoped (only naming-relevant fields like scene
 
 ### Step 5: Director-style block merging
 
-**This step is executed by the LLM.** Based on Step 3 fill-in results, merge segments by the following trigger priorities:
+**New: Auto-suggest merge candidates first, then LLM reviews.**
+
+```bash
+python scripts/cuesheet_creator.py suggest-merges --analysis-json <out-dir>/analysis.json --output <out-dir>/suggested_merges.json
+```
+
+`suggest-merges` computes inter-block continuity scores based on:
+- Visual similarity (brightness, contrast, saturation, hue distance)
+- Cut boundary strength (histogram distance)
+- ASR continuity (dialogue spanning boundaries)
+- Short block detection
+
+Blocks with continuity score ≥ 0.65 are suggested for merging. The output is a preliminary merge plan that the **LLM must review** — the script cannot detect narrative-function boundaries (scene changes, flashback transitions) which are semantic Tier 1 must-split rules.
+
+**LLM review workflow:**
+1. Read `suggested_merges.json`
+2. For each suggested merge group, verify that Tier 1 must-split rules are NOT violated
+3. Adjust the merge plan (split groups that cross narrative boundaries, merge additional groups the score missed)
+4. Pass the reviewed plan to `merge-blocks`
+
+**This step is still partly executed by the LLM.** Based on Step 3 fill-in results AND the auto-suggested merge plan, apply these trigger priorities:
 
 **Tier 1: Must split**
 
@@ -444,7 +481,15 @@ python scripts/cuesheet_creator.py merge-blocks --analysis-json <analysis.json> 
 
 ### Step 6: Generate final structure JSON
 
-**Option A: Generate skeleton first, then LLM fills content** (recommended for consistency):
+**Option A: Use the filled `draft_fill.json` directly** (recommended — fewest steps):
+
+```bash
+python scripts/cuesheet_creator.py build-final-skeleton --source-json <out-dir>/draft_fill.json --output <out-dir>/final_cues.json --template production
+```
+
+> `build-final-skeleton` now accepts `draft_fill.json` as input. It detects the `fill_status` field and preserves all LLM-filled content. This skips the separate "empty skeleton → LLM fill" step entirely.
+
+**Option B: From merged blocks** (when merge step is used):
 
 ```bash
 python scripts/cuesheet_creator.py build-final-skeleton --source-json <out-dir>/merged_blocks.json --output <out-dir>/final_cues.json --template production --video-title "My Video" --source-path <video-path>
@@ -452,9 +497,7 @@ python scripts/cuesheet_creator.py build-final-skeleton --source-json <out-dir>/
 
 > **Note**: When the source is merged blocks (not raw analysis.json), always pass `--source-path` and `--video-title` explicitly. Otherwise metadata may fall back to intermediate file paths.
 
-This creates a `final_cues.json` with correct structure and empty fields for LLM to fill in. Then LLM fills the empty fields.
-
-**Option B: LLM generates the full JSON directly** — structure reference: `assets/final_cues.sample.json`.
+**Option C: LLM generates the full JSON directly** — structure reference: `assets/final_cues.sample.json`.
 
 Requirements:
 
@@ -696,7 +739,8 @@ Detailed checklist in `references/review-checklist.md`. Core checks:
 | `scan-video` | Extract frames + scene detection + optional ASR/OCR + output analysis.json. Default output: `<video-dir>/<video-name>_cuesheet/`. Supports `--start-time` / `--end-time` for clip range. |
 | `draft-from-analysis` | Generate template-differentiated draft skeleton from analysis.json |
 | `merge-blocks` | Merge draft blocks based on a merge plan (with validation). Unreferenced blocks are auto-appended with `"unmerged": true` flag (not silently dropped). Use `--strict` to fail on unreferenced blocks instead. |
-| `build-final-skeleton` | Generate empty final_cues.json skeleton from merged/draft blocks for LLM fill-in |
+| `suggest-merges` | Auto-compute inter-block continuity scores and output a suggested merge plan. LLM reviews and adjusts before passing to `merge-blocks`. Use `--threshold` to adjust sensitivity (default 0.65). |
+| `build-final-skeleton` | Generate final_cues.json skeleton from merged/draft blocks or filled draft_fill.json |
 | `apply-naming` | Batch-apply naming overrides (field-scoped JSON, full-text MD). Supports `--dry-run` / `--output`. |
 | `validate-cue-json` | Structural validation (time, required fields, duplicates) + quality warnings (empty recommended fields, temp-name consistency) + delivery readiness check. `Valid: YES` means no structural errors; `Delivery ready: YES` means all recommended fields are filled and naming is consistent. |
 | `export-md` | Generate Markdown final from final_cues.json |

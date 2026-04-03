@@ -1160,6 +1160,7 @@ def build_draft_blocks(scene_candidates: list[dict[str, Any]], duration: float) 
                 "keyframe": item.get("image_path"),
                 "candidate_score": item.get("score"),
                 "cut_reason": item.get("reason"),
+                "visual_features": item.get("visual_features"),
             }
         )
     return blocks
@@ -1332,6 +1333,38 @@ def compute_frame_sharpness(cv2: Any, frame: Any) -> float:
     return float(cv2.Laplacian(gray, cv2.CV_64F).var())
 
 
+def compute_visual_features(cv2: Any, np: Any, frame: Any) -> dict[str, Any]:
+    """Compute objective visual features from a single frame.
+    Returns brightness, contrast, saturation, dominant hue, and derived labels."""
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    brightness = float(np.mean(gray))
+    contrast = float(np.std(gray))
+    saturation = float(np.mean(hsv[:, :, 1]))
+    dominant_hue = float(np.mean(hsv[:, :, 0]))
+    # Derive human-readable labels
+    if brightness < 80:
+        tone = "dark"
+    elif brightness > 170:
+        tone = "bright"
+    else:
+        tone = "mid"
+    if 10 < dominant_hue < 30:
+        color_temp = "warm"
+    elif 90 < dominant_hue < 130:
+        color_temp = "cool"
+    else:
+        color_temp = "neutral"
+    return {
+        "brightness": round(brightness, 1),
+        "contrast": round(contrast, 1),
+        "saturation": round(saturation, 1),
+        "dominant_hue": round(dominant_hue, 1),
+        "tone": tone,
+        "color_temp": color_temp,
+    }
+
+
 def score_keyframe_candidates(
     cv2: Any,
     frames: list[tuple[float, Any, str]],
@@ -1463,6 +1496,7 @@ def cmd_scan_video(args: argparse.Namespace) -> int:
             raise RuntimeError(f"Failed to write keyframe: {image_path}")
 
         sharpness = round(compute_frame_sharpness(cv2, frame), 2)
+        visual_features = compute_visual_features(cv2, np, frame)
         score = 1.0 if prev_frame is None else round(compute_hist_distance(cv2, np, prev_frame, frame), 4)
         frame_record = {
             "index": idx,
@@ -1471,6 +1505,7 @@ def cmd_scan_video(args: argparse.Namespace) -> int:
             "image_path": str(image_path),
             "score_from_previous": score,
             "sharpness": sharpness,
+            "visual_features": visual_features,
         }
         sampled_frames.append(frame_record)
 
@@ -1486,6 +1521,7 @@ def cmd_scan_video(args: argparse.Namespace) -> int:
                         "image_path": str(image_path),
                         "score": score,
                         "reason": reason,
+                        "visual_features": visual_features,
                     }
                 )
         prev_frame = frame
@@ -1498,19 +1534,37 @@ def cmd_scan_video(args: argparse.Namespace) -> int:
             cs = candidate["seconds"]
             best_frame = None
             best_sharpness = -1.0
+            # Primary window: within 3x sample_interval after the cut point
             for sf in sampled_frames:
                 if sf["seconds"] >= cs and sf["seconds"] < cs + sample_interval * 3:
                     if sf["sharpness"] > best_sharpness:
                         best_sharpness = sf["sharpness"]
                         best_frame = sf
+            # Fallback: if no frame found in primary window, find the closest
+            # sampled frame by absolute time distance (fixes null keyframe bug)
+            if best_frame is None and sampled_frames:
+                closest = min(sampled_frames, key=lambda sf: abs(sf["seconds"] - cs))
+                best_frame = closest
+                notes.append(
+                    f"Keyframe fallback for candidate at {format_seconds(cs)}: "
+                    f"no frame in primary window, using closest frame at "
+                    f"{format_seconds(closest['seconds'])} "
+                    f"(distance={abs(closest['seconds'] - cs):.3f}s)"
+                )
             if best_frame:
                 candidate["image_path"] = best_frame["image_path"]
-                candidate["sharpness"] = best_frame["sharpness"]
+                candidate["sharpness"] = best_frame.get("sharpness", 0.0)
+                candidate["visual_features"] = best_frame.get("visual_features")
 
     if len(scene_candidates) <= 1:
         notes.append("Very few scene candidates detected; consider manual merging or denser sampling in draft phase")
 
     draft_blocks = build_draft_blocks(scene_candidates, float(effective_end))
+
+    if not draft_blocks:
+        notes.append("ERROR: No draft blocks generated. Scene detection may have failed or video is too short.")
+        print("ERROR: No draft blocks could be generated from this video. "
+              "Check scene detection settings or try a different --sample-interval.", file=sys.stderr)
 
     # --- Phase 2.2: ASR ---
     asr_result: dict[str, Any] = {"status": "not-run", "segments": []}
@@ -1574,9 +1628,71 @@ def cmd_scan_video(args: argparse.Namespace) -> int:
             ocr_result = {"status": "no-frames", "detections": []}
             notes.append("No keyframes available for OCR")
 
+    # --- Build agent_summary: compact overview for LLM consumption ---
+    # This avoids the need to read the full sampled_frames array (which can be
+    # 50-200KB for a 10-minute video). LLM should read ONLY agent_summary for
+    # Step 3b fill-in, not the full analysis.json.
+    KEYFRAME_BATCH_SIZE = 6
+    block_overview: list[dict[str, Any]] = []
+    all_keyframe_paths: list[str] = []
+    for block in draft_blocks:
+        kf = block.get("keyframe")
+        kf_rel = ""
+        if kf:
+            try:
+                kf_rel = os.path.relpath(kf, str(out_dir)).replace("\\", "/")
+            except Exception:
+                kf_rel = str(Path(kf).name) if kf else ""
+            all_keyframe_paths.append(str(kf))
+        block_overview.append({
+            "id": block["shot_block"],
+            "start": block["start_time"],
+            "end": block["end_time"],
+            "keyframe": kf_rel,
+            "cut_reason": block.get("cut_reason", ""),
+            "visual_features": block.get("visual_features"),
+        })
+
+    # Group keyframes into batches for efficient LLM viewing
+    keyframe_batches: list[list[str]] = []
+    for i in range(0, len(all_keyframe_paths), KEYFRAME_BATCH_SIZE):
+        keyframe_batches.append(all_keyframe_paths[i:i + KEYFRAME_BATCH_SIZE])
+
+    # Compact ASR summary (only first line of each segment, max 20)
+    asr_compact: list[dict[str, str]] = []
+    for seg in asr_result.get("segments", [])[:20]:
+        asr_compact.append({
+            "time": f"{seg.get('start_time', '')} - {seg.get('end_time', '')}",
+            "text": seg.get("text", "")[:120],
+        })
+
+    # Compact OCR summary
+    ocr_compact: list[dict[str, Any]] = []
+    for det in ocr_result.get("detections", [])[:15]:
+        ocr_compact.append({
+            "frame": Path(det.get("frame", "")).name,
+            "texts": det.get("texts", [])[:5],
+        })
+
+    agent_summary = {
+        "_purpose": "Compact overview for LLM fill-in. Read THIS instead of the full analysis.json.",
+        "video_duration": video_info.get("duration_timecode", ""),
+        "video_resolution": f"{video_info.get('resolution', {}).get('width', '')}x{video_info.get('resolution', {}).get('height', '')}",
+        "total_blocks": len(draft_blocks),
+        "detection_method": detection_method,
+        "blocks": block_overview,
+        "keyframe_batches": keyframe_batches,
+        "asr_status": asr_result["status"],
+        "asr_segments": asr_compact,
+        "ocr_status": ocr_result["status"],
+        "ocr_detections": ocr_compact,
+        "degradation_notes": [n for n in notes if "unavailable" in n.lower() or "failed" in n.lower() or "degraded" in n.lower() or "fallback" in n.lower()],
+    }
+
     analysis = {
         "generated_at": dt.datetime.now().isoformat(timespec="seconds"),
         "video": video_info,
+        "agent_summary": agent_summary,
         "analysis_config": {
             "sample_interval_sec": sample_interval,
             "scene_threshold": sd_threshold,
@@ -1670,7 +1786,13 @@ def cmd_draft_from_analysis(args: argparse.Namespace) -> int:
     notes = analysis.get("notes", [])
     asr_data = analysis.get("asr", {})
     ocr_data = analysis.get("ocr", {})
+    agent_summary = analysis.get("agent_summary", {})
     template = args.template
+
+    if not blocks:
+        print("ERROR: No draft blocks found in analysis.json. "
+              "Cannot generate draft. Check scan-video output.", file=sys.stderr)
+        return 1
 
     # --- Template-specific column definitions for the draft table ---
     DRAFT_COLUMNS: dict[str, list[tuple[str, str]]] = {
@@ -1746,6 +1868,30 @@ def cmd_draft_from_analysis(args: argparse.Namespace) -> int:
         lines.append(f"| **Analysis range** | {eff_range.get('start_time', '')} — {eff_range.get('end_time', '')} (clip-only) |")
     lines.append("")
 
+    # --- Keyframe batch plan (for efficient LLM viewing) ---
+    keyframe_batches = agent_summary.get("keyframe_batches", [])
+    if not keyframe_batches:
+        # Build from blocks if agent_summary not available (backward compat)
+        KEYFRAME_BATCH_SIZE = 6
+        all_kf = [b.get("keyframe") for b in blocks if b.get("keyframe")]
+        keyframe_batches = [all_kf[i:i + KEYFRAME_BATCH_SIZE] for i in range(0, len(all_kf), KEYFRAME_BATCH_SIZE)]
+
+    if keyframe_batches:
+        lines.append("## Keyframe Batches for Fill-in")
+        lines.append("")
+        lines.append("> **Agent instruction**: View keyframes in these batches (not one-by-one).")
+        lines.append("> After viewing each batch, fill in ALL corresponding blocks in the JSON fill-in file.")
+        lines.append("")
+        for batch_idx, batch in enumerate(keyframe_batches, start=1):
+            paths_display = ", ".join(Path(p).name for p in batch)
+            block_ids = []
+            for b in blocks:
+                kf = b.get("keyframe")
+                if kf and str(kf) in batch:
+                    block_ids.append(b["shot_block"])
+            lines.append(f"- **Batch {batch_idx}** (blocks {', '.join(block_ids)}): `{paths_display}`")
+        lines.append("")
+
     # --- Template-differentiated candidate segments ---
     lines.append(f"## Candidate Segments ({template})")
     lines.append("")
@@ -1754,61 +1900,70 @@ def cmd_draft_from_analysis(args: argparse.Namespace) -> int:
     lines.append(header)
     lines.append(separator)
 
-    if not blocks:
-        empty_row = "| " + " | ".join([""] * len(draft_cols)) + " |"
-        lines.append(empty_row)
-    else:
-        for block in blocks:
-            cells: list[str] = []
-            for col_label, col_key in draft_cols:
-                if col_key == "shot_block":
-                    cells.append(block.get("shot_block", ""))
-                elif col_key == "start_time":
-                    cells.append(block.get("start_time", ""))
-                elif col_key == "end_time":
-                    cells.append(block.get("end_time", ""))
-                elif col_key == "_keyframe":
-                    img_rel = relpath_for_markdown(block.get("keyframe"), output_path)
-                    cells.append(f"![kf]({img_rel})" if img_rel else "")
-                elif col_key == "cut_reason":
-                    cells.append(block.get("cut_reason", ""))
-                elif col_key == "_confidence":
-                    score = block.get("candidate_score")
-                    cells.append("high" if isinstance(score, (int, float)) and score >= 0.8 else "medium")
-                elif col_key == "_placeholder":
-                    cells.append("*(pending)*")
-            lines.append("| " + " | ".join(cells) + " |")
+    for block in blocks:
+        cells: list[str] = []
+        for col_label, col_key in draft_cols:
+            if col_key == "shot_block":
+                cells.append(block.get("shot_block", ""))
+            elif col_key == "start_time":
+                cells.append(block.get("start_time", ""))
+            elif col_key == "end_time":
+                cells.append(block.get("end_time", ""))
+            elif col_key == "_keyframe":
+                img_rel = relpath_for_markdown(block.get("keyframe"), output_path)
+                cells.append(f"![kf]({img_rel})" if img_rel else "*(no keyframe)*")
+            elif col_key == "cut_reason":
+                cells.append(block.get("cut_reason", ""))
+            elif col_key == "_confidence":
+                score = block.get("candidate_score")
+                cells.append("high" if isinstance(score, (int, float)) and score >= 0.8 else "medium")
+            elif col_key == "_placeholder":
+                cells.append("*(pending)*")
+        lines.append("| " + " | ".join(cells) + " |")
     lines.append("")
 
     # --- Template-specific fill-in guidance ---
     lines.append("## Fill-in Guidance")
     lines.append("")
+    lines.append("> **IMPORTANT**: Use the JSON fill-in file (`draft_fill.json`) instead of editing this Markdown table.")
+    lines.append("> The JSON file was generated alongside this draft. Fill in the empty fields there,")
+    lines.append("> then the final export steps will consume the JSON directly.")
+    lines.append("")
     if template == "production":
-        lines.append("For each block above, fill in:")
-        lines.append("- **Shot Size**: WS / MS / CU / EWS / ECU")
-        lines.append("- **Angle/Lens**: front / OTS / low angle / high angle / eye-level")
-        lines.append("- **Motion**: static / push-in / pull-out / pan / tracking / handheld")
-        lines.append("- **Scene**: location/setup name (use `temp: xxx` if unconfirmed)")
-        lines.append("- **Mood**: emotional tone of the block")
-        lines.append("- **Characters**: who is present (use `temp: xxx` if unconfirmed)")
-        lines.append("- **Event**: what happens in this block")
-        lines.append("- **Director Note**: camera language, cross-dept coordination points")
+        lines.append("For each block, fill in these fields in `draft_fill.json`:")
+        lines.append("- **shot_size**: WS / MS / CU / EWS / ECU")
+        lines.append("- **angle_or_lens**: front / OTS / low angle / high angle / eye-level")
+        lines.append("- **motion**: static / push-in / pull-out / pan / tracking / handheld")
+        lines.append("- **scene**: location/setup name (use `temp: xxx` if unconfirmed)")
+        lines.append("- **mood**: emotional tone of the block")
+        lines.append("- **location**: where this takes place")
+        lines.append("- **characters**: who is present (use `temp: xxx` if unconfirmed)")
+        lines.append("- **event**: what happens in this block")
+        lines.append("- **important_dialogue**: key dialogue lines")
+        lines.append("- **music_note**: music entry/exit/change suggestions")
+        lines.append("- **director_note**: camera language, cross-dept coordination points")
+        lines.append("- **confidence**: e.g. `segment=high; names=low`")
+        lines.append("- **needs_confirmation**: items that need user confirmation")
     elif template == "music-director":
-        lines.append("For each block above, fill in:")
-        lines.append("- **Mood**: emotional tone and progression within the block")
-        lines.append("- **Event**: what happens (context for music decisions)")
-        lines.append("- **Dialogue**: key lines that music must accommodate")
-        lines.append("- **Music Note**: entry/exit/change points, overall direction")
-        lines.append("- **Rhythm Change**: BPM shifts, pulse changes, rhythmic events")
-        lines.append("- **Instrumentation**: specific instrument/texture suggestions")
-        lines.append("- **Dynamics**: pp/mp/mf/f/ff progression")
+        lines.append("For each block, fill in these fields in `draft_fill.json`:")
+        lines.append("- **mood**: emotional tone and progression within the block")
+        lines.append("- **event**: what happens (context for music decisions)")
+        lines.append("- **important_dialogue**: key lines that music must accommodate")
+        lines.append("- **music_note**: entry/exit/change points, overall direction")
+        lines.append("- **rhythm_change**: BPM shifts, pulse changes, rhythmic events")
+        lines.append("- **instrumentation**: specific instrument/texture suggestions")
+        lines.append("- **dynamics**: pp/mp/mf/f/ff progression")
+        lines.append("- **confidence**: e.g. `mood=medium; dialogue=low`")
+        lines.append("- **needs_confirmation**: items that need user confirmation")
     elif template == "script":
-        lines.append("For each block above, fill in:")
-        lines.append("- **Scene**: scene name or setup (use `temp: xxx` if unconfirmed)")
-        lines.append("- **Location**: where this takes place")
-        lines.append("- **Characters**: who is present")
-        lines.append("- **Event**: what happens — focus on story, not camera")
-        lines.append("- **Dialogue**: key lines / narration / inner monologue")
+        lines.append("For each block, fill in these fields in `draft_fill.json`:")
+        lines.append("- **scene**: scene name or setup (use `temp: xxx` if unconfirmed)")
+        lines.append("- **location**: where this takes place")
+        lines.append("- **characters**: who is present")
+        lines.append("- **event**: what happens — focus on story, not camera")
+        lines.append("- **important_dialogue**: key lines / narration / inner monologue")
+        lines.append("- **confidence**: e.g. `segment=high; dialogue=low`")
+        lines.append("- **needs_confirmation**: items that need user confirmation")
     lines.append("")
 
     # --- ASR Highlights ---
@@ -1941,16 +2096,164 @@ def cmd_draft_from_analysis(args: argparse.Namespace) -> int:
     # --- Next steps ---
     lines.append("## Next Steps")
     lines.append("")
-    lines.append("1. Fill in official character / scene / prop names.")
-    lines.append("2. Fill in the *(pending)* fields in the candidate segments table above.")
-    lines.append("3. Merge blocks using `merge-blocks` if needed.")
-    lines.append("4. Generate `final_cues.json` (or use `build-final-skeleton`).")
-    lines.append("5. Validate with `validate-cue-json`.")
-    lines.append("6. Export with `build-xlsx` and `export-md`.")
+    lines.append("1. View keyframes in batches listed above.")
+    lines.append("2. Fill in empty fields in `draft_fill.json` (the JSON fill-in file generated alongside this draft).")
+    lines.append("3. Confirm character / scene / prop names (or keep temp markers).")
+    lines.append("4. Merge blocks using `merge-blocks` if needed.")
+    lines.append("5. Generate `final_cues.json` (or use `build-final-skeleton`).")
+    lines.append("6. Validate with `validate-cue-json`.")
+    lines.append("7. Export with `build-xlsx` and `export-md`.")
     lines.append("")
 
     output_path.write_text("\n".join(lines), encoding="utf-8")
+
+    # --- Generate JSON fill-in file (draft_fill.json) ---
+    # This is the primary file the LLM should edit instead of the Markdown table.
+    # Pre-populated fields (shot_block, start_time, end_time, keyframe) are filled in.
+    # Data-derived fields (important_dialogue, confidence, needs_confirmation, etc.)
+    # are pre-filled from ASR/OCR/analysis data. Remaining fields are empty for LLM.
+    fill_in_path = output_path.parent / "draft_fill.json"
+    columns = TEMPLATE_COLUMNS[template]
+
+    # Build lookup structures for pre-fill
+    asr_segments = asr_data.get("segments", [])
+    ocr_detections = ocr_data.get("detections", [])
+    ocr_by_frame: dict[str, list[str]] = {}
+    for det in ocr_detections:
+        frame_path = det.get("frame", "")
+        ocr_by_frame[frame_path] = det.get("texts", [])
+        # Also index by filename for cross-platform path matching
+        if frame_path:
+            ocr_by_frame[Path(frame_path).name] = det.get("texts", [])
+
+    detection_method = analysis.get("analysis_config", {}).get("detection_method", "histogram")
+    asr_status = asr_data.get("status", "not-run")
+
+    has_prefill = False
+    fill_rows: list[dict[str, Any]] = []
+    for block in blocks:
+        row: dict[str, Any] = {}
+        kf_raw = block.get("keyframe")
+        kf_rel = ""
+        if kf_raw:
+            try:
+                kf_rel = os.path.relpath(kf_raw, str(output_path.parent)).replace("\\", "/")
+            except Exception:
+                kf_rel = str(Path(kf_raw).name) if kf_raw else ""
+
+        block_start = block.get("start_seconds", 0.0)
+        block_end = block.get("end_seconds", 0.0)
+        vf = block.get("visual_features") or {}
+
+        for col in columns:
+            if col == "shot_block":
+                row[col] = block.get("shot_block", "")
+            elif col == "start_time":
+                row[col] = block.get("start_time", "")
+            elif col == "end_time":
+                row[col] = block.get("end_time", "")
+            elif col == "keyframe":
+                row[col] = kf_rel
+
+            # --- Pre-fill: important_dialogue from ASR ---
+            elif col == "important_dialogue" and asr_segments:
+                overlapping = [
+                    s for s in asr_segments
+                    if s.get("start", 0) < block_end and s.get("end", 0) > block_start
+                ]
+                if overlapping:
+                    row[col] = "; ".join(
+                        f"[{s.get('start_time', '')}] {s.get('text', '')}" for s in overlapping
+                    )
+                    has_prefill = True
+                else:
+                    row[col] = ""
+
+            # --- Pre-fill: confidence from structural data ---
+            elif col == "confidence":
+                parts = []
+                score = block.get("candidate_score")
+                if detection_method == "scenedetect":
+                    parts.append("segment=high")
+                elif isinstance(score, (int, float)) and score >= 0.8:
+                    parts.append("segment=high")
+                else:
+                    parts.append("segment=medium")
+                # ASR coverage
+                if asr_status == "ok":
+                    asr_overlap = any(
+                        s.get("start", 0) < block_end and s.get("end", 0) > block_start
+                        for s in asr_segments
+                    )
+                    parts.append("dialogue=high" if asr_overlap else "dialogue=low")
+                elif asr_status != "not-run":
+                    parts.append("dialogue=degraded")
+                parts.append("names=low")
+                row[col] = "; ".join(parts)
+                has_prefill = True
+
+            # --- Pre-fill: needs_confirmation (always needed) ---
+            elif col == "needs_confirmation":
+                row[col] = "character names; scene names"
+                has_prefill = True
+
+            # --- Pre-fill: mood with visual feature hints ---
+            elif col == "mood" and vf:
+                # Provide objective hints, not a final mood label
+                hints = []
+                if vf.get("tone"):
+                    hints.append(f"{vf['tone']} tones")
+                if vf.get("color_temp") and vf["color_temp"] != "neutral":
+                    hints.append(f"{vf['color_temp']} color")
+                if vf.get("contrast", 0) > 70:
+                    hints.append("high contrast")
+                elif vf.get("contrast", 0) < 30:
+                    hints.append("low contrast")
+                if vf.get("saturation", 0) < 40:
+                    hints.append("desaturated")
+                elif vf.get("saturation", 0) > 150:
+                    hints.append("vivid")
+                if hints:
+                    row[col] = f"[visual: {', '.join(hints)}] "
+                    has_prefill = True
+                else:
+                    row[col] = ""
+
+            # --- Default: empty for LLM to fill ---
+            else:
+                # Check OCR for director_note / event enrichment
+                if col in ("director_note", "event") and kf_raw:
+                    kf_name = Path(kf_raw).name if kf_raw else ""
+                    ocr_texts = ocr_by_frame.get(str(kf_raw), []) or ocr_by_frame.get(kf_name, [])
+                    if ocr_texts:
+                        row[col] = f"[OCR detected: {'; '.join(ocr_texts[:3])}] "
+                        has_prefill = True
+                    else:
+                        row[col] = ""
+                else:
+                    row[col] = ""
+        fill_rows.append(row)
+
+    fill_status = "partial" if has_prefill else "pending"
+    fill_data = {
+        "_instructions": (
+            "Fill in the empty string fields for each block based on keyframe analysis. "
+            "Fields starting with '[visual: ...]' or '[OCR detected: ...]' contain auto-generated hints — "
+            "incorporate or replace them with your analysis. "
+            "Do NOT modify shot_block, start_time, end_time, or keyframe. "
+            "Use 'temp: xxx' for unconfirmed names. "
+            "After filling, this file can be used directly as input to build-final-skeleton or validate-cue-json."
+        ),
+        "template": template,
+        "video_title": video.get("source_path", "untitled"),
+        "source_path": video.get("source_path", ""),
+        "fill_status": fill_status,
+        "rows": fill_rows,
+    }
+    write_json(fill_in_path, fill_data)
+
     print(str(output_path))
+    print(f"JSON fill-in file: {fill_in_path}")
     return 0
 
 
@@ -2595,17 +2898,27 @@ def cmd_export_md(args: argparse.Namespace) -> int:
 
 
 def cmd_build_final_skeleton(args: argparse.Namespace) -> int:
-    """Generate a final_cues.json skeleton from merged blocks (or analysis draft_blocks).
-    Fields are populated with empty strings for LLM to fill in."""
+    """Generate a final_cues.json skeleton from merged blocks, analysis draft_blocks,
+    or a filled draft_fill.json. Fields are populated with empty strings for LLM to
+    fill in (unless source already has filled content, e.g. from draft_fill.json)."""
     source_path = Path(args.source_json)
     if not source_path.exists():
         raise FileNotFoundError(f"Source JSON not found: {source_path}")
 
     source = json.loads(source_path.read_text(encoding="utf-8"))
 
-    # Accept either merged output or raw analysis
-    blocks = source.get("blocks") or source.get("draft_blocks", [])
-    template = args.template or "production"
+    # Accept multiple input formats:
+    # 1. draft_fill.json (has "rows" with template columns + "fill_status")
+    # 2. merged_blocks.json (has "blocks")
+    # 3. analysis.json (has "draft_blocks")
+    is_fill_input = "fill_status" in source
+    if is_fill_input and source.get("rows"):
+        # draft_fill.json — rows already have template column structure
+        blocks = source["rows"]
+    else:
+        blocks = source.get("blocks") or source.get("draft_blocks", [])
+
+    template = args.template or source.get("template") or "production"
     if template not in TEMPLATE_COLUMNS:
         raise ValueError(f"Unknown template: {template}")
 
@@ -2623,22 +2936,20 @@ def cmd_build_final_skeleton(args: argparse.Namespace) -> int:
                 row[col] = block.get("end_time", "")
             elif col == "keyframe":
                 row[col] = block.get("keyframe", "")
-            elif col == "confidence":
-                row[col] = ""
-            elif col == "needs_confirmation":
-                row[col] = ""
             else:
-                row[col] = ""
+                # Preserve existing content if source already has it (draft_fill.json)
+                existing = block.get(col, "")
+                row[col] = existing if existing else ""
         rows.append(row)
 
     # Resolve metadata with fallback + warning
-    video_title = args.video_title or source.get("video", {}).get("source_path")
-    source_path_value = args.source_path or source.get("video", {}).get("source_path") or source.get("source_analysis", "")
-    if not args.video_title and not source.get("video", {}).get("source_path"):
+    video_title = args.video_title or source.get("video_title") or source.get("video", {}).get("source_path")
+    source_path_value = args.source_path or source.get("source_path") or source.get("video", {}).get("source_path") or source.get("source_analysis", "")
+    if not video_title:
         print("WARNING: --video-title not provided and source JSON has no video metadata. "
               "Falling back to 'untitled'. Consider passing --video-title explicitly.", file=sys.stderr)
         video_title = "untitled"
-    if not args.source_path and not source.get("video", {}).get("source_path"):
+    if not source_path_value:
         print("WARNING: --source-path not provided and source JSON has no video metadata. "
               "Falling back to source_analysis path. Consider passing --source-path explicitly.", file=sys.stderr)
 
@@ -2653,6 +2964,191 @@ def cmd_build_final_skeleton(args: argparse.Namespace) -> int:
     output_path = Path(args.output)
     write_json(output_path, skeleton)
     print(str(output_path))
+    return 0
+
+
+def compute_block_continuity(
+    block_a: dict[str, Any],
+    block_b: dict[str, Any],
+    sampled_frames: list[dict[str, Any]],
+    asr_segments: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Compute a continuity score between two adjacent blocks.
+    Higher score = more likely candidates for merging."""
+    scores: dict[str, float] = {}
+
+    # 1. Visual similarity: histogram distance between keyframes via sampled_frames
+    vf_a = block_a.get("visual_features") or {}
+    vf_b = block_b.get("visual_features") or {}
+    if vf_a and vf_b:
+        brightness_diff = abs(vf_a.get("brightness", 128) - vf_b.get("brightness", 128)) / 255.0
+        contrast_diff = abs(vf_a.get("contrast", 50) - vf_b.get("contrast", 50)) / 128.0
+        saturation_diff = abs(vf_a.get("saturation", 50) - vf_b.get("saturation", 50)) / 255.0
+        hue_diff = abs(vf_a.get("dominant_hue", 90) - vf_b.get("dominant_hue", 90)) / 180.0
+        visual_sim = 1.0 - (brightness_diff * 0.3 + contrast_diff * 0.2 + saturation_diff * 0.2 + hue_diff * 0.3)
+        scores["visual_similarity"] = round(max(visual_sim, 0.0), 3)
+        # Same tone = bonus
+        scores["same_tone"] = 1.0 if vf_a.get("tone") == vf_b.get("tone") else 0.0
+        scores["same_color_temp"] = 1.0 if vf_a.get("color_temp") == vf_b.get("color_temp") else 0.0
+    else:
+        scores["visual_similarity"] = 0.5  # neutral if no data
+
+    # 2. Cut strength: low histogram distance at boundary suggests visual continuity
+    b_score = block_b.get("candidate_score")
+    if isinstance(b_score, (int, float)):
+        scores["cut_weakness"] = round(1.0 - min(b_score, 1.0), 3)
+    else:
+        scores["cut_weakness"] = 0.5
+
+    # 3. ASR continuity: dialogue spanning the boundary
+    boundary = block_a.get("end_seconds", 0.0)
+    tolerance = 1.0  # seconds
+    asr_spans = any(
+        s.get("start", 0) < boundary + tolerance and s.get("end", 0) > boundary - tolerance
+        for s in asr_segments
+    )
+    scores["asr_continuity"] = 1.0 if asr_spans else 0.0
+
+    # 4. Temporal proximity: very short blocks are merge candidates
+    dur_a = block_a.get("end_seconds", 0) - block_a.get("start_seconds", 0)
+    dur_b = block_b.get("end_seconds", 0) - block_b.get("start_seconds", 0)
+    short_block = dur_a < 1.5 or dur_b < 1.5
+    scores["short_block_bonus"] = 0.3 if short_block else 0.0
+
+    # Weighted total
+    total = (
+        scores.get("visual_similarity", 0.5) * 0.35
+        + scores.get("cut_weakness", 0.5) * 0.25
+        + scores.get("same_tone", 0) * 0.1
+        + scores.get("same_color_temp", 0) * 0.05
+        + scores.get("asr_continuity", 0) * 0.15
+        + scores.get("short_block_bonus", 0) * 0.1
+    )
+
+    return {
+        "block_a": block_a.get("shot_block", ""),
+        "block_b": block_b.get("shot_block", ""),
+        "continuity_score": round(total, 3),
+        "component_scores": scores,
+        "suggest_merge": total >= 0.65,
+    }
+
+
+def cmd_suggest_merges(args: argparse.Namespace) -> int:
+    """Compute inter-block continuity scores and suggest merge candidates.
+    Outputs a preliminary merge plan that the LLM can review and adjust."""
+    analysis_path = Path(args.analysis_json)
+    if not analysis_path.exists():
+        raise FileNotFoundError(f"analysis.json not found: {analysis_path}")
+
+    analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
+    draft_blocks = analysis.get("draft_blocks", [])
+    sampled_frames = analysis.get("sampled_frames", [])
+    asr_segments = analysis.get("asr", {}).get("segments", [])
+
+    if len(draft_blocks) < 2:
+        print("Not enough blocks to suggest merges (need at least 2).", file=sys.stderr)
+        return 0
+
+    threshold = float(args.threshold) if hasattr(args, "threshold") and args.threshold else 0.65
+
+    # Compute pairwise continuity
+    pairs: list[dict[str, Any]] = []
+    for i in range(len(draft_blocks) - 1):
+        pair = compute_block_continuity(
+            draft_blocks[i], draft_blocks[i + 1], sampled_frames, asr_segments
+        )
+        pairs.append(pair)
+
+    # Build suggested merge groups from consecutive high-continuity pairs
+    merge_groups: list[dict[str, Any]] = []
+    current_group: list[str] = [draft_blocks[0]["shot_block"]]
+    current_reasons: list[str] = []
+
+    for pair in pairs:
+        if pair["suggest_merge"]:
+            current_group.append(pair["block_b"])
+            scores = pair["component_scores"]
+            reasons = []
+            if scores.get("visual_similarity", 0) > 0.7:
+                reasons.append("visually similar")
+            if scores.get("asr_continuity", 0) > 0:
+                reasons.append("dialogue spans boundary")
+            if scores.get("short_block_bonus", 0) > 0:
+                reasons.append("short block")
+            if scores.get("cut_weakness", 0) > 0.6:
+                reasons.append("weak cut boundary")
+            current_reasons.extend(reasons)
+        else:
+            # Flush current group
+            if len(current_group) > 1:
+                merge_groups.append({
+                    "source_blocks": current_group,
+                    "new_id": current_group[0],
+                    "keyframe": None,
+                    "reason": f"auto-suggested: {'; '.join(set(current_reasons)) if current_reasons else 'high continuity score'}",
+                    "confidence": "auto",
+                })
+            current_group = [pair["block_b"]]
+            current_reasons = []
+
+    # Flush last group
+    if len(current_group) > 1:
+        merge_groups.append({
+            "source_blocks": current_group,
+            "new_id": current_group[0],
+            "keyframe": None,
+            "reason": f"auto-suggested: {'; '.join(set(current_reasons)) if current_reasons else 'high continuity score'}",
+            "confidence": "auto",
+        })
+
+    # Also include singleton blocks that weren't merged
+    merged_ids = set()
+    for g in merge_groups:
+        merged_ids.update(g["source_blocks"])
+    singletons = [b["shot_block"] for b in draft_blocks if b["shot_block"] not in merged_ids]
+    for sid in singletons:
+        merge_groups.append({
+            "source_blocks": [sid],
+            "new_id": sid,
+            "keyframe": None,
+            "reason": "no merge suggested — keep as separate block",
+            "confidence": "auto",
+        })
+
+    # Renumber
+    for idx, group in enumerate(merge_groups, start=1):
+        group["new_id"] = make_block_id(idx)
+
+    output = {
+        "generated_at": dt.datetime.now().isoformat(timespec="seconds"),
+        "_instructions": (
+            "This is an AUTO-GENERATED merge suggestion based on visual continuity scoring. "
+            "The LLM should REVIEW and ADJUST this plan before passing to merge-blocks. "
+            "Specifically: check that narrative function boundaries are respected "
+            "(scene changes, flashback transitions, format changes should NOT be merged)."
+        ),
+        "threshold": threshold,
+        "total_blocks": len(draft_blocks),
+        "suggested_merge_groups": len([g for g in merge_groups if len(g["source_blocks"]) > 1]),
+        "pairwise_scores": pairs,
+        "merges": merge_groups,
+    }
+
+    output_path = Path(args.output)
+    write_json(output_path, output)
+
+    # Print summary
+    merged_count = sum(1 for g in merge_groups if len(g["source_blocks"]) > 1)
+    kept_count = sum(1 for g in merge_groups if len(g["source_blocks"]) == 1)
+    print(f"Suggested merge plan: {merged_count} merge group(s), {kept_count} kept separate.")
+    print(f"Output: {output_path}")
+    if merged_count > 0:
+        print("Merge suggestions:")
+        for g in merge_groups:
+            if len(g["source_blocks"]) > 1:
+                print(f"  {' + '.join(g['source_blocks'])} → {g['new_id']} ({g['reason']})")
+    print("NOTE: LLM should review this plan for narrative-function boundaries before executing.")
     return 0
 
 
@@ -2775,6 +3271,12 @@ def build_parser() -> argparse.ArgumentParser:
     merge.add_argument("--output", type=resolved_path, required=True, help="Output merged blocks JSON")
     merge.add_argument("--strict", action="store_true", help="Fail on unreferenced blocks and time ordering issues")
     merge.set_defaults(func=cmd_merge_blocks)
+
+    suggest = subparsers.add_parser("suggest-merges", help="Auto-suggest block merges based on visual continuity scoring")
+    suggest.add_argument("--analysis-json", type=resolved_path, required=True, help="Path to analysis.json")
+    suggest.add_argument("--output", type=resolved_path, required=True, help="Output suggested merge plan JSON")
+    suggest.add_argument("--threshold", type=float, default=0.65, help="Continuity score threshold for merge suggestion (0.0-1.0, default 0.65)")
+    suggest.set_defaults(func=cmd_suggest_merges)
 
     export_md = subparsers.add_parser("export-md", help="Generate Markdown final from final_cues.json")
     export_md.add_argument("--cue-json", type=resolved_path, required=True, help="Structured cue JSON")
