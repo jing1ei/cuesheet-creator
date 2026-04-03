@@ -2919,19 +2919,22 @@ def cmd_build_final_skeleton(args: argparse.Namespace) -> int:
         blocks = source["rows"]
         fill_status = source.get("fill_status", "unknown")
         if fill_status == "partial":
-            # Check how many required content fields are still empty
-            CONTENT_FIELDS = {"scene", "event", "characters", "mood", "shot_size",
-                              "location", "music_note", "director_note"}
+            # Check how many content fields are still empty, using the actual
+            # template columns (not a hardcoded subset) to catch all templates
+            STRUCTURAL_FIELDS = {"shot_block", "start_time", "end_time", "keyframe"}
+            active_template = source.get("template", "production")
+            template_cols = set(TEMPLATE_COLUMNS.get(active_template, TEMPLATE_COLUMNS["production"]))
+            content_cols = template_cols - STRUCTURAL_FIELDS
             empty_count = 0
             for row in blocks:
-                for f in CONTENT_FIELDS:
+                for f in content_cols:
                     val = row.get(f, "")
-                    if f in TEMPLATE_COLUMNS.get(source.get("template", "production"), []):
-                        if not val or val.startswith("[visual:") or val.startswith("[OCR detected:"):
-                            empty_count += 1
+                    if not val or val.startswith("[visual:") or val.startswith("[OCR detected:"):
+                        empty_count += 1
             if empty_count > 0:
-                print(f"WARNING: fill_status is 'partial' — {empty_count} content field(s) still empty or hint-only. "
-                      f"LLM fill-in may be incomplete. Proceeding, but final may have gaps.", file=sys.stderr)
+                print(f"WARNING: fill_status is 'partial' — {empty_count} content field(s) still empty or hint-only "
+                      f"(template={active_template}, {len(content_cols)} content fields per block). "
+                      f"LLM fill-in may be incomplete.", file=sys.stderr)
         elif fill_status == "pending":
             print("WARNING: fill_status is 'pending' — no LLM fill-in has been done. "
                   "The final JSON will have mostly empty content fields.", file=sys.stderr)
@@ -2963,12 +2966,18 @@ def cmd_build_final_skeleton(args: argparse.Namespace) -> int:
         rows.append(row)
 
     # Resolve metadata with fallback + warning
-    video_title = args.video_title or source.get("video_title") or source.get("video", {}).get("source_path")
-    source_path_value = args.source_path or source.get("source_path") or source.get("video", {}).get("source_path") or source.get("source_analysis", "")
-    if not video_title:
+    # Priority: CLI arg > source video_title > source video.source_path (stem only)
+    raw_title = args.video_title or source.get("video_title") or source.get("video", {}).get("source_path")
+    if raw_title and not args.video_title and not source.get("video_title"):
+        # Came from source_path — normalize to stem
+        video_title = Path(raw_title).stem
+    elif raw_title:
+        video_title = raw_title
+    else:
         print("WARNING: --video-title not provided and source JSON has no video metadata. "
               "Falling back to 'untitled'. Consider passing --video-title explicitly.", file=sys.stderr)
         video_title = "untitled"
+    source_path_value = args.source_path or source.get("source_path") or source.get("video", {}).get("source_path") or source.get("source_analysis", "")
     if not source_path_value:
         print("WARNING: --source-path not provided and source JSON has no video metadata. "
               "Falling back to source_analysis path. Consider passing --source-path explicitly.", file=sys.stderr)

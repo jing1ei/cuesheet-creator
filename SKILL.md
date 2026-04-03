@@ -327,7 +327,8 @@ The JSON file has `fill_status: "partial"` (when pre-fills exist) or `"pending"`
 > 1. Read `agent_summary` from `analysis.json` (NOT the full file — just the `agent_summary` field)
 > 2. View keyframe images in batches listed in `agent_summary.keyframe_batches` (5-8 at a time)
 > 3. For each batch, fill in ALL corresponding blocks in `draft_fill.json` in one write pass
-> 4. After ALL blocks are filled, update `fill_status` from `"pending"` to `"complete"`
+> 4. After ALL blocks are filled, update `fill_status` from `"partial"` (or `"pending"`) to `"complete"`
+> 5. Note: some fields already have auto-generated content (e.g. `important_dialogue` from ASR, `mood` with `[visual: ...]` hints, `confidence`). The LLM should **incorporate or replace** these — they are hints, not final content.
 >
 > **Why JSON instead of Markdown**: JSON fields avoid column-misalignment bugs from Markdown pipe characters. LLM can target specific fields without counting table columns. The filled JSON can feed directly into `build-final-skeleton` and `validate-cue-json`.
 >
