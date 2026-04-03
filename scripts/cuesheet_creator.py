@@ -313,6 +313,25 @@ def get_recommended_fields(template: str) -> list[str]:
     return _FALLBACK_RECOMMENDED.get(template, [])
 
 
+def get_required_fields(template: str) -> list[str]:
+    """Get required content fields from the template definition.
+
+    Returns fields marked required=true EXCLUDING structural fields
+    (shot_block, start_time, end_time, keyframe) which are always
+    enforced separately.
+    """
+    structural = {"shot_block", "start_time", "end_time", "keyframe"}
+    tmpl = _TEMPLATE_REGISTRY.get(template)
+    if tmpl and "columns" in tmpl:
+        return [
+            col["field"] for col in tmpl["columns"]
+            if isinstance(col, dict) and col.get("required", False)
+            and col.get("field", "") not in structural
+        ]
+    # Fallback: treat recommended as required for backward compat
+    return get_recommended_fields(template)
+
+
 def _ensure_templates_loaded() -> None:
     """Lazy initializer: load templates on first access if not already loaded."""
     if not TEMPLATE_COLUMNS:
@@ -2010,59 +2029,47 @@ def cmd_draft_from_analysis(args: argparse.Namespace) -> int:
               "Cannot generate draft. Check scan-video output.", file=sys.stderr)
         return 1
 
-    # --- Template-specific column definitions for the draft table ---
-    DRAFT_COLUMNS: dict[str, list[tuple[str, str]]] = {
-        "production": [
-            ("Shot Block", "shot_block"),
-            ("Start", "start_time"),
-            ("End", "end_time"),
-            ("Keyframe", "_keyframe"),
-            ("Shot Size", "_placeholder"),
-            ("Angle/Lens", "_placeholder"),
-            ("Motion", "_placeholder"),
-            ("Scene", "_placeholder"),
-            ("Mood", "_placeholder"),
-            ("Location", "_placeholder"),
-            ("Characters", "_placeholder"),
-            ("Event", "_placeholder"),
-            ("Dialogue", "_placeholder"),
-            ("Music Note", "_placeholder"),
-            ("Director Note", "_placeholder"),
-            ("Cut Reason", "cut_reason"),
-            ("Confidence", "_confidence"),
-            ("Needs Confirmation", "_placeholder"),
-        ],
-        "music-director": [
-            ("Shot Block", "shot_block"),
-            ("Start", "start_time"),
-            ("End", "end_time"),
-            ("Mood", "_placeholder"),
-            ("Event", "_placeholder"),
-            ("Dialogue", "_placeholder"),
-            ("Music Note", "_placeholder"),
-            ("Rhythm Change", "_placeholder"),
-            ("Instrumentation", "_placeholder"),
-            ("Dynamics", "_placeholder"),
-            ("Cut Reason", "cut_reason"),
-            ("Confidence", "_confidence"),
-            ("Needs Confirmation", "_placeholder"),
-        ],
-        "script": [
-            ("Shot Block", "shot_block"),
-            ("Start", "start_time"),
-            ("End", "end_time"),
-            ("Scene", "_placeholder"),
-            ("Location", "_placeholder"),
-            ("Characters", "_placeholder"),
-            ("Event", "_placeholder"),
-            ("Dialogue", "_placeholder"),
-            ("Cut Reason", "cut_reason"),
-            ("Confidence", "_confidence"),
-            ("Needs Confirmation", "_placeholder"),
-        ],
-    }
+    # --- Template-driven column definitions for the draft Markdown table ---
+    # These are generated from the template registry. Structural fields get
+    # special rendering; everything else is a placeholder for LLM to fill.
+    _STRUCTURAL_DRAFT_KEYS = {"shot_block", "start_time", "end_time"}
+    _DATA_DERIVED_DRAFT_KEYS = {"confidence", "needs_confirmation"}
 
-    draft_cols = DRAFT_COLUMNS.get(template, DRAFT_COLUMNS["production"])
+    def _build_draft_columns(tmpl_name: str) -> list[tuple[str, str]]:
+        """Build draft Markdown column tuples from template definition."""
+        tmpl_def = get_template_definition(tmpl_name)
+        if tmpl_def and "columns" in tmpl_def:
+            cols: list[tuple[str, str]] = []
+            for col in tmpl_def["columns"]:
+                field = col.get("field", "")
+                label = col.get("label", field)
+                if field in _STRUCTURAL_DRAFT_KEYS:
+                    cols.append((label, field))
+                elif field == "keyframe":
+                    cols.append((label, "_keyframe"))
+                elif field in _DATA_DERIVED_DRAFT_KEYS:
+                    cols.append((label, f"_{field}"))
+                else:
+                    cols.append((label, "_placeholder"))
+            # Always append Cut Reason as a diagnostic column
+            cols.append(("Cut Reason", "cut_reason"))
+            return cols
+        # Fallback for unknown templates: use TEMPLATE_COLUMNS field list
+        field_list = TEMPLATE_COLUMNS.get(tmpl_name, TEMPLATE_COLUMNS.get("production", []))
+        cols = []
+        for field in field_list:
+            if field in _STRUCTURAL_DRAFT_KEYS:
+                cols.append((field, field))
+            elif field == "keyframe":
+                cols.append(("Keyframe", "_keyframe"))
+            elif field in _DATA_DERIVED_DRAFT_KEYS:
+                cols.append((field, f"_{field}"))
+            else:
+                cols.append((field, "_placeholder"))
+        cols.append(("Cut Reason", "cut_reason"))
+        return cols
+
+    draft_cols = _build_draft_columns(template)
 
     lines: list[str] = []
     lines.append(f"# Cue Sheet Draft ({template})")
@@ -2133,53 +2140,35 @@ def cmd_draft_from_analysis(args: argparse.Namespace) -> int:
             elif col_key == "_confidence":
                 score = block.get("candidate_score")
                 cells.append("high" if isinstance(score, (int, float)) and score >= 0.8 else "medium")
+            elif col_key == "_needs_confirmation":
+                cells.append("*(pending)*")
             elif col_key == "_placeholder":
                 cells.append("*(pending)*")
         lines.append("| " + " | ".join(cells) + " |")
     lines.append("")
 
-    # --- Template-specific fill-in guidance ---
+    # --- Template-driven fill-in guidance ---
     lines.append("## Fill-in Guidance")
     lines.append("")
     lines.append("> **IMPORTANT**: Use the JSON fill-in file (`draft_fill.json`) instead of editing this Markdown table.")
     lines.append("> The JSON file was generated alongside this draft. Fill in the empty fields there,")
     lines.append("> then the final export steps will consume the JSON directly.")
     lines.append("")
-    if template == "production":
+    tmpl_guidance = get_template_fill_guidance(template)
+    if tmpl_guidance:
         lines.append("For each block, fill in these fields in `draft_fill.json`:")
-        lines.append("- **shot_size**: WS / MS / CU / EWS / ECU")
-        lines.append("- **angle_or_lens**: front / OTS / low angle / high angle / eye-level")
-        lines.append("- **motion**: static / push-in / pull-out / pan / tracking / handheld")
-        lines.append("- **scene**: location/setup name (use `temp: xxx` if unconfirmed)")
-        lines.append("- **mood**: emotional tone of the block")
-        lines.append("- **location**: where this takes place")
-        lines.append("- **characters**: who is present (use `temp: xxx` if unconfirmed)")
-        lines.append("- **event**: what happens in this block")
-        lines.append("- **important_dialogue**: key dialogue lines")
-        lines.append("- **music_note**: music entry/exit/change suggestions")
-        lines.append("- **director_note**: camera language, cross-dept coordination points")
-        lines.append("- **confidence**: e.g. `segment=high; names=low`")
-        lines.append("- **needs_confirmation**: items that need user confirmation")
-    elif template == "music-director":
-        lines.append("For each block, fill in these fields in `draft_fill.json`:")
-        lines.append("- **mood**: emotional tone and progression within the block")
-        lines.append("- **event**: what happens (context for music decisions)")
-        lines.append("- **important_dialogue**: key lines that music must accommodate")
-        lines.append("- **music_note**: entry/exit/change points, overall direction")
-        lines.append("- **rhythm_change**: BPM shifts, pulse changes, rhythmic events")
-        lines.append("- **instrumentation**: specific instrument/texture suggestions")
-        lines.append("- **dynamics**: pp/mp/mf/f/ff progression")
-        lines.append("- **confidence**: e.g. `mood=medium; dialogue=low`")
-        lines.append("- **needs_confirmation**: items that need user confirmation")
-    elif template == "script":
-        lines.append("For each block, fill in these fields in `draft_fill.json`:")
-        lines.append("- **scene**: scene name or setup (use `temp: xxx` if unconfirmed)")
-        lines.append("- **location**: where this takes place")
-        lines.append("- **characters**: who is present")
-        lines.append("- **event**: what happens — focus on story, not camera")
-        lines.append("- **important_dialogue**: key lines / narration / inner monologue")
-        lines.append("- **confidence**: e.g. `segment=high; dialogue=low`")
-        lines.append("- **needs_confirmation**: items that need user confirmation")
+        for g in tmpl_guidance:
+            lines.append(f"- {g}")
+    else:
+        # Fallback: list content columns that LLM needs to fill
+        content_cols = [
+            col for col in TEMPLATE_COLUMNS.get(template, [])
+            if col not in _STRUCTURAL_DRAFT_KEYS and col not in {"keyframe", "confidence", "needs_confirmation"}
+        ]
+        if content_cols:
+            lines.append("For each block, fill in these fields in `draft_fill.json`:")
+            for col in content_cols:
+                lines.append(f"- **{col}**")
     lines.append("")
 
     # --- ASR Highlights ---
@@ -2451,6 +2440,21 @@ def cmd_draft_from_analysis(args: argparse.Namespace) -> int:
         fill_rows.append(row)
 
     fill_status = "partial" if has_prefill else "pending"
+    # Build template segmentation context for LLM consumption
+    seg = get_template_segmentation(template)
+    perspective = get_template_perspective(template)
+    template_context: dict[str, Any] = {}
+    if perspective:
+        template_context["perspective"] = perspective
+    if seg:
+        template_context["segmentation_strategy"] = seg.get("strategy", "")
+        if seg.get("split_triggers"):
+            template_context["split_triggers"] = seg["split_triggers"]
+        if seg.get("keyframe_priority"):
+            template_context["keyframe_priority"] = seg["keyframe_priority"]
+        if seg.get("merge_bias"):
+            template_context["merge_bias"] = seg["merge_bias"]
+
     fill_data = {
         "_instructions": (
             "Fill in the empty string fields for each block based on keyframe analysis. "
@@ -2461,6 +2465,7 @@ def cmd_draft_from_analysis(args: argparse.Namespace) -> int:
             "After filling, this file can be used directly as input to build-final-skeleton or validate-cue-json."
         ),
         "template": template,
+        "template_context": template_context if template_context else None,
         "video_title": Path(video.get("source_path", "untitled")).stem if video.get("source_path") else "untitled",
         "source_path": video.get("source_path", ""),
         "fill_status": fill_status,
@@ -2694,8 +2699,14 @@ def cmd_validate_cue_json(args: argparse.Namespace) -> int:
             if "temp:" in value.lower() and not needs_conf:
                 warnings.append(f"{label}: '{nf}' contains temp name but needs_confirmation is empty.")
 
-        # Per-template recommended field completeness
+        # Per-template field completeness: required vs recommended
+        for req_field in get_required_fields(template):
+            if req_field in expected_columns and not str(row.get(req_field, "")).strip():
+                warnings.append(f"{label}: required field '{req_field}' is empty for template '{template}'.")
         for rec_field in get_recommended_fields(template):
+            # Skip fields already covered by required check
+            if rec_field in set(get_required_fields(template)):
+                continue
             if rec_field in expected_columns and not str(row.get(rec_field, "")).strip():
                 warnings.append(f"{label}: recommended field '{rec_field}' is empty for template '{template}'.")
 
@@ -2710,8 +2721,8 @@ def cmd_validate_cue_json(args: argparse.Namespace) -> int:
                 if kf_path and not kf_path.exists():
                     warnings.append(f"{label}: keyframe file not found: {kf_path}")
 
-    # Delivery readiness: no warnings about empty recommended fields, temp-name inconsistencies, or missing keyframes
-    delivery_gaps = [w for w in warnings if "recommended field" in w or "temp name" in w.lower() or "needs_confirmation is empty" in w or "keyframe file not found" in w]
+    # Delivery readiness: required fields + temp-name consistency + keyframe existence
+    delivery_gaps = [w for w in warnings if "required field" in w or "temp name" in w.lower() or "needs_confirmation is empty" in w or "keyframe file not found" in w]
     delivery_ready = len(errors) == 0 and len(delivery_gaps) == 0
 
     report = {
@@ -3238,13 +3249,24 @@ def cmd_normalize_fill(args: argparse.Namespace) -> int:
                         "message": f"'{marker}' in '{nf}' has no matching entry in needs_confirmation",
                     })
 
-        # 5. Report empty required fields
+        # 5. Report empty required / recommended fields
+        req_set = set(get_required_fields(template))
+        for req_field in req_set:
+            if req_field in set(columns) and not str(row.get(req_field, "")).strip():
+                issues.append({
+                    "block": block_id, "field": req_field,
+                    "type": "empty_required",
+                    "severity": "warning",
+                    "message": f"Required field '{req_field}' is empty",
+                })
         for rec_field in get_recommended_fields(template):
+            if rec_field in req_set:
+                continue  # Already reported as required
             if rec_field in set(columns) and not str(row.get(rec_field, "")).strip():
                 issues.append({
                     "block": block_id, "field": rec_field,
-                    "type": "empty_required",
-                    "severity": "warning",
+                    "type": "empty_recommended",
+                    "severity": "info",
                     "message": f"Recommended field '{rec_field}' is empty",
                 })
 
@@ -4223,8 +4245,8 @@ def build_parser() -> argparse.ArgumentParser:
     skeleton.add_argument("--output", type=resolved_path, required=True, help="Output final_cues.json skeleton path")
     skeleton.add_argument(
         "--template",
-        default="production",
-        help="Template for field selection. Use list-templates to see available templates.",
+        default=None,
+        help="Template for field selection (default: read from source JSON, fallback production). Use list-templates to see available templates.",
     )
     skeleton.add_argument("--video-title", default=None, help="Video title for the skeleton")
     skeleton.add_argument("--source-path", type=resolved_path, default=None, help="Video source path override (for merged input that lacks video metadata)")

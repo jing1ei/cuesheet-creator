@@ -1217,6 +1217,290 @@ def test_normalize_fill_fix_mode():
         assert "calm" in row["mood"], f"mood content should be preserved: '{row['mood']}'"
 
 
+
+
+# ---------------------------------------------------------------------------
+# 12. Template management commands
+# ---------------------------------------------------------------------------
+
+def test_list_templates_returns_builtin():
+    """list-templates should include the 3 built-in templates."""
+    import argparse
+    import io, contextlib
+
+    args = argparse.Namespace(output_format="json")
+    captured = io.StringIO()
+    with contextlib.redirect_stdout(captured):
+        result = cc.cmd_list_templates(args)
+    assert result == 0
+
+    output = json.loads(captured.getvalue())
+    names = [t["name"] for t in output["templates"]]
+    assert "production" in names
+    assert "music-director" in names
+    assert "script" in names
+    for t in output["templates"]:
+        assert t["source"] == "built-in"
+        assert t["columns"] > 0
+
+
+def test_show_template_production():
+    """show-template should return full details for production template."""
+    import argparse
+    import io, contextlib
+
+    args = argparse.Namespace(name="production", output_format="json")
+    captured = io.StringIO()
+    with contextlib.redirect_stdout(captured):
+        result = cc.cmd_show_template(args)
+    assert result == 0
+
+    tmpl = json.loads(captured.getvalue())
+    assert tmpl["name"] == "production"
+    assert "perspective" in tmpl
+    assert "segmentation" in tmpl
+    assert tmpl["segmentation"]["strategy"] == "scene-cut"
+    assert len(tmpl["columns"]) == 17
+
+
+def test_show_template_not_found():
+    """show-template for a nonexistent template should fail."""
+    import argparse
+    import io, contextlib
+
+    args = argparse.Namespace(name="nonexistent-template", output_format="text")
+    captured_err = io.StringIO()
+    with contextlib.redirect_stderr(captured_err):
+        result = cc.cmd_show_template(args)
+    assert result == 1
+
+
+def test_save_and_delete_custom_template():
+    """save-template should validate and save; delete-template should remove it."""
+    import argparse
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        custom_tmpl = {
+            "name": "test-custom",
+            "description": "Test custom template",
+            "perspective": "Test perspective",
+            "segmentation": {
+                "strategy": "test-strategy",
+                "description": "Test",
+                "split_triggers": ["trigger 1"],
+                "merge_bias": ["bias 1"],
+                "keyframe_priority": ["priority 1"],
+            },
+            "columns": [
+                {"field": "shot_block", "label": "Shot Block", "width": 12, "required": True},
+                {"field": "start_time", "label": "Start", "width": 14, "required": True},
+                {"field": "end_time", "label": "End", "width": 14, "required": True},
+                {"field": "test_field", "label": "Test Field", "width": 20, "required": True, "recommended": True},
+            ],
+        }
+        input_path = Path(tmpdir) / "test_custom.json"
+        input_path.write_text(json.dumps(custom_tmpl), encoding="utf-8")
+
+        # Save
+        args = argparse.Namespace(input=str(input_path), validate=True, overwrite=False)
+        result = cc.cmd_save_template(args)
+        assert result == 0, "save-template should succeed"
+
+        # Verify it appears in registry
+        assert "test-custom" in cc.TEMPLATE_COLUMNS
+        assert "test_field" in cc.TEMPLATE_COLUMNS["test-custom"]
+
+        # Delete
+        args = argparse.Namespace(name="test-custom")
+        result = cc.cmd_delete_template(args)
+        assert result == 0, "delete-template should succeed"
+        assert "test-custom" not in cc.TEMPLATE_COLUMNS
+
+
+def test_delete_builtin_template_refused():
+    """delete-template should refuse to delete built-in templates."""
+    import argparse
+    import io, contextlib
+
+    args = argparse.Namespace(name="production")
+    captured_err = io.StringIO()
+    with contextlib.redirect_stderr(captured_err):
+        result = cc.cmd_delete_template(args)
+    assert result == 1, "Should refuse to delete built-in template"
+
+
+# ---------------------------------------------------------------------------
+# 13. build-final-skeleton template inheritance (P1-1 fix)
+# ---------------------------------------------------------------------------
+
+def test_build_final_skeleton_inherits_template_from_source():
+    """build-final-skeleton without --template should inherit from source JSON."""
+    import argparse
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        draft_fill = {
+            "template": "music-director",
+            "video_title": "test_video",
+            "source_path": "/fake/test.mp4",
+            "fill_status": "complete",
+            "rows": [
+                {
+                    "shot_block": "A1",
+                    "start_time": "00:00:00.000",
+                    "end_time": "00:00:05.000",
+                    "mood": "tense",
+                    "event": "Chase scene",
+                    "important_dialogue": "",
+                    "music_note": "fast strings",
+                    "rhythm_change": "120bpm",
+                    "instrumentation": "strings",
+                    "dynamics": "ff",
+                    "confidence": "high",
+                    "needs_confirmation": "",
+                },
+            ],
+        }
+        fill_path = Path(tmpdir) / "draft_fill.json"
+        fill_path.write_text(json.dumps(draft_fill), encoding="utf-8")
+
+        out_path = Path(tmpdir) / "final_cues.json"
+        args = argparse.Namespace(
+            source_json=str(fill_path),
+            output=str(out_path),
+            template=None,  # Not specified — should inherit music-director
+            video_title=None,
+            source_path=None,
+        )
+        result = cc.cmd_build_final_skeleton(args)
+        assert result == 0
+
+        final = json.loads(out_path.read_text(encoding="utf-8"))
+        assert final["template"] == "music-director", (
+            f"Should inherit music-director from source, got '{final['template']}'"
+        )
+        # Should have music-director columns, not production columns
+        row = final["rows"][0]
+        assert "mood" in row, "music-director should have mood column"
+        assert "shot_size" not in row, "music-director should NOT have shot_size"
+
+
+# ---------------------------------------------------------------------------
+# 14. draft-from-analysis: data-driven draft columns for custom template
+# ---------------------------------------------------------------------------
+
+def test_draft_fill_json_template_context():
+    """draft_fill.json should contain template_context with segmentation info."""
+    import argparse
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        analysis = _make_synthetic_analysis(tmpdir)
+        analysis_path = Path(tmpdir) / "analysis.json"
+        analysis_path.write_text(json.dumps(analysis), encoding="utf-8")
+
+        md_out = Path(tmpdir) / "cue_sheet.md"
+        args = argparse.Namespace(
+            analysis_json=str(analysis_path),
+            output=str(md_out),
+            template="music-director",
+        )
+        cc.cmd_draft_from_analysis(args)
+
+        fill_path = Path(tmpdir) / "draft_fill.json"
+        fill = json.loads(fill_path.read_text(encoding="utf-8"))
+
+        # Should have template_context with segmentation info
+        ctx = fill.get("template_context")
+        assert ctx is not None, "template_context should be present"
+        assert ctx.get("segmentation_strategy") == "emotional-arc", (
+            f"Expected emotional-arc strategy, got {ctx.get('segmentation_strategy')}"
+        )
+        assert "perspective" in ctx
+        assert "split_triggers" in ctx
+        assert "keyframe_priority" in ctx
+        assert "merge_bias" in ctx
+
+
+def test_draft_markdown_uses_template_guidance():
+    """draft cue_sheet.md should use template's fill_guidance, not hardcoded text."""
+    import argparse
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        analysis = _make_synthetic_analysis(tmpdir)
+        analysis_path = Path(tmpdir) / "analysis.json"
+        analysis_path.write_text(json.dumps(analysis), encoding="utf-8")
+
+        md_out = Path(tmpdir) / "cue_sheet.md"
+        args = argparse.Namespace(
+            analysis_json=str(analysis_path),
+            output=str(md_out),
+            template="music-director",
+        )
+        cc.cmd_draft_from_analysis(args)
+
+        md_content = md_out.read_text(encoding="utf-8")
+        # Should contain music-director specific guidance from template JSON
+        assert "**mood**:" in md_content, "Should contain mood guidance from fill_guidance"
+        assert "**music_note**:" in md_content, "Should contain music_note guidance"
+        # Should NOT contain production-specific fields
+        assert "**shot_size**:" not in md_content, "Should NOT contain shot_size guidance"
+        assert "**director_note**:" not in md_content, "Should NOT contain director_note guidance"
+
+
+# ---------------------------------------------------------------------------
+# 15. validate-cue-json: required vs recommended field distinction
+# ---------------------------------------------------------------------------
+
+def test_validate_required_field_in_delivery_gaps():
+    """Empty required fields should appear in delivery_gaps; recommended should not."""
+    import argparse
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # mood is required+recommended in music-director;
+        # rhythm_change is recommended but NOT required
+        cue = {
+            "template": "music-director",
+            "rows": [{
+                "shot_block": "A1",
+                "start_time": "00:00:00.000",
+                "end_time": "00:00:05.000",
+                "mood": "",  # required — should be in delivery_gaps
+                "event": "Test",
+                "important_dialogue": "",
+                "music_note": "pad",
+                "rhythm_change": "",  # recommended only — should NOT be in delivery_gaps
+                "instrumentation": "",
+                "dynamics": "",
+                "confidence": "high",
+                "needs_confirmation": "",
+            }],
+        }
+        cue_path = Path(tmpdir) / "cue.json"
+        report_path = Path(tmpdir) / "report.json"
+        cue_path.write_text(json.dumps(cue), encoding="utf-8")
+
+        args = argparse.Namespace(
+            cue_json=str(cue_path),
+            template=None,
+            report_out=str(report_path),
+            output_format="json",
+            base_dir=None,
+            check_files=False,
+        )
+        cc.cmd_validate_cue_json(args)
+
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        # delivery_gaps should mention "required field" for mood
+        required_gaps = [g for g in report["delivery_gaps"] if "required field" in g and "mood" in g]
+        assert len(required_gaps) >= 1, (
+            f"Empty required 'mood' should be in delivery_gaps: {report['delivery_gaps']}"
+        )
+        # delivery_gaps should NOT mention recommended-only fields
+        recommended_gaps = [g for g in report["delivery_gaps"] if "recommended field" in g]
+        assert len(recommended_gaps) == 0, (
+            f"Recommended-only fields should NOT be in delivery_gaps: {report['delivery_gaps']}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Runner (standalone, no pytest required)
 # ---------------------------------------------------------------------------
