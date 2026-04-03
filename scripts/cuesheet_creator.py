@@ -2,7 +2,7 @@
 """cuesheet-creator — turn a single video into a collaborative cue sheet."""
 from __future__ import annotations
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 import argparse
 import datetime as dt
@@ -62,7 +62,7 @@ OPTIONAL_COMPONENTS = {
     },
 }
 
-TEMPLATE_COLUMNS = {
+_BUILTIN_TEMPLATE_COLUMNS = {
     "script": [
         "shot_block",
         "start_time",
@@ -110,6 +110,219 @@ TEMPLATE_COLUMNS = {
     ],
 }
 
+
+# ---------------------------------------------------------------------------
+# Template system — JSON-based templates with runtime registry
+# ---------------------------------------------------------------------------
+
+# Runtime registry populated by load_templates(). Maps template name -> full
+# template definition dict (JSON content). For backward compat, also exposes
+# TEMPLATE_COLUMNS as a simple name -> column-field-list mapping.
+_TEMPLATE_REGISTRY: dict[str, dict[str, Any]] = {}
+TEMPLATE_COLUMNS: dict[str, list[str]] = {}
+
+# Set of built-in template names (never deletable)
+_BUILTIN_TEMPLATE_NAMES: set[str] = set()
+
+# Required top-level fields in a template JSON
+_TEMPLATE_REQUIRED_FIELDS = {"name", "description", "perspective", "segmentation", "columns"}
+_TEMPLATE_REQUIRED_SEGMENTATION_FIELDS = {"strategy", "description", "split_triggers", "merge_bias", "keyframe_priority"}
+_TEMPLATE_REQUIRED_COLUMN_FIELDS = {"field", "label"}
+# Structural columns that are always present
+_STRUCTURAL_COLUMN_FIELDS = {"shot_block", "start_time", "end_time"}
+
+
+def validate_template_json(data: dict[str, Any]) -> list[str]:
+    """Validate a template JSON dict. Returns list of error strings (empty = valid)."""
+    errors: list[str] = []
+
+    # Check required top-level fields
+    for field in _TEMPLATE_REQUIRED_FIELDS:
+        if field not in data:
+            errors.append(f"Missing required field: '{field}'")
+
+    name = data.get("name", "")
+    if not name or not isinstance(name, str):
+        errors.append("'name' must be a non-empty string")
+    elif not all(c.isalnum() or c in "-_" for c in name):
+        errors.append(f"'name' contains invalid characters: '{name}'. Use only alphanumeric, hyphens, underscores.")
+
+    # Validate segmentation
+    seg = data.get("segmentation")
+    if isinstance(seg, dict):
+        for sf in _TEMPLATE_REQUIRED_SEGMENTATION_FIELDS:
+            if sf not in seg:
+                errors.append(f"segmentation missing required field: '{sf}'")
+        strategy = seg.get("strategy", "")
+        if not strategy or not isinstance(strategy, str):
+            errors.append("segmentation.strategy must be a non-empty string")
+        for list_field in ("split_triggers", "merge_bias", "keyframe_priority"):
+            val = seg.get(list_field)
+            if val is not None and not isinstance(val, list):
+                errors.append(f"segmentation.{list_field} must be a list")
+    elif seg is not None:
+        errors.append("'segmentation' must be a dict")
+
+    # Validate columns
+    columns = data.get("columns")
+    if isinstance(columns, list):
+        seen_fields: set[str] = set()
+        for idx, col in enumerate(columns):
+            if not isinstance(col, dict):
+                errors.append(f"columns[{idx}] must be a dict")
+                continue
+            for rf in _TEMPLATE_REQUIRED_COLUMN_FIELDS:
+                if rf not in col:
+                    errors.append(f"columns[{idx}] missing required field: '{rf}'")
+            field_name = col.get("field", "")
+            if field_name in seen_fields:
+                errors.append(f"Duplicate column field name: '{field_name}'")
+            seen_fields.add(field_name)
+    elif columns is not None:
+        errors.append("'columns' must be a list")
+
+    return errors
+
+
+def _template_columns_from_json(data: dict[str, Any]) -> list[str]:
+    """Extract ordered column field names from a template JSON definition."""
+    columns = data.get("columns", [])
+    return [col["field"] for col in columns if isinstance(col, dict) and "field" in col]
+
+
+def _template_column_widths_from_json(data: dict[str, Any]) -> dict[str, int]:
+    """Extract column width overrides from a template JSON definition."""
+    widths: dict[str, int] = {}
+    for col in data.get("columns", []):
+        if isinstance(col, dict) and "field" in col and "width" in col:
+            widths[col["field"]] = int(col["width"])
+    return widths
+
+
+def load_templates() -> None:
+    """Scan built-in and custom template directories, populate the runtime registry.
+
+    Built-in templates are in <skill-root>/templates/*.json.
+    Custom templates are in <skill-root>/templates/custom/*.json.
+    Custom templates take priority on name collision.
+    """
+    global _TEMPLATE_REGISTRY, TEMPLATE_COLUMNS, _BUILTIN_TEMPLATE_NAMES
+
+    _TEMPLATE_REGISTRY = {}
+    TEMPLATE_COLUMNS = {}
+    _BUILTIN_TEMPLATE_NAMES = set()
+
+    builtin_dir = SKILL_ROOT / "templates"
+    custom_dir = builtin_dir / "custom"
+
+    # Load built-in templates
+    if builtin_dir.exists():
+        for json_file in sorted(builtin_dir.glob("*.json")):
+            try:
+                data = json.loads(json_file.read_text(encoding="utf-8"))
+                name = data.get("name", json_file.stem)
+                data["_source"] = "built-in"
+                data["_path"] = str(json_file)
+                _TEMPLATE_REGISTRY[name] = data
+                TEMPLATE_COLUMNS[name] = _template_columns_from_json(data)
+                _BUILTIN_TEMPLATE_NAMES.add(name)
+            except Exception as exc:
+                print(f"WARNING: Failed to load built-in template {json_file.name}: {exc}", file=sys.stderr)
+
+    # Load custom templates (override built-in on name collision)
+    if custom_dir.exists():
+        for json_file in sorted(custom_dir.glob("*.json")):
+            try:
+                data = json.loads(json_file.read_text(encoding="utf-8"))
+                name = data.get("name", json_file.stem)
+                data["_source"] = "custom"
+                data["_path"] = str(json_file)
+                _TEMPLATE_REGISTRY[name] = data
+                TEMPLATE_COLUMNS[name] = _template_columns_from_json(data)
+            except Exception as exc:
+                print(f"WARNING: Failed to load custom template {json_file.name}: {exc}", file=sys.stderr)
+
+    # Fallback: if no templates were loaded from JSON, use the hardcoded ones
+    # This ensures backward compatibility if templates/ dir is missing.
+    if not TEMPLATE_COLUMNS:
+        TEMPLATE_COLUMNS.update(_BUILTIN_TEMPLATE_COLUMNS)
+        for name, cols in _BUILTIN_TEMPLATE_COLUMNS.items():
+            _TEMPLATE_REGISTRY[name] = {
+                "name": name,
+                "description": f"Built-in {name} template (hardcoded fallback)",
+                "columns": [{"field": f, "label": f} for f in cols],
+                "_source": "hardcoded-fallback",
+            }
+            _BUILTIN_TEMPLATE_NAMES.add(name)
+
+
+def get_template_definition(name: str) -> dict[str, Any] | None:
+    """Get the full template definition dict by name, or None if not found."""
+    return _TEMPLATE_REGISTRY.get(name)
+
+
+def get_template_segmentation(name: str) -> dict[str, Any]:
+    """Get the segmentation config for a template. Returns empty dict if not found."""
+    tmpl = _TEMPLATE_REGISTRY.get(name, {})
+    return tmpl.get("segmentation", {})
+
+
+def get_template_perspective(name: str) -> str:
+    """Get the perspective text for a template."""
+    tmpl = _TEMPLATE_REGISTRY.get(name, {})
+    return tmpl.get("perspective", "")
+
+
+def get_template_fill_guidance(name: str) -> list[str]:
+    """Get the fill guidance list for a template."""
+    tmpl = _TEMPLATE_REGISTRY.get(name, {})
+    return tmpl.get("fill_guidance", [])
+
+
+def get_template_column_widths(name: str) -> dict[str, int]:
+    """Get column width overrides from a template definition."""
+    tmpl = _TEMPLATE_REGISTRY.get(name)
+    if tmpl:
+        return _template_column_widths_from_json(tmpl)
+    return {}
+
+
+def validate_template_name(template: str) -> None:
+    """Validate that a template name exists in the registry. Raises ValueError if not."""
+    if template not in TEMPLATE_COLUMNS:
+        available = ", ".join(sorted(TEMPLATE_COLUMNS.keys()))
+        raise ValueError(
+            f"Unknown template: '{template}'. Available templates: {available}"
+        )
+
+
+def get_recommended_fields(template: str) -> list[str]:
+    """Get recommended fields from the template definition."""
+    tmpl = _TEMPLATE_REGISTRY.get(template)
+    if tmpl and "columns" in tmpl:
+        return [
+            col["field"] for col in tmpl["columns"]
+            if isinstance(col, dict) and col.get("recommended", False)
+        ]
+    # Hardcoded fallback for backward compat
+    _FALLBACK_RECOMMENDED: dict[str, list[str]] = {
+        "production": ["scene", "event", "shot_size", "mood", "characters"],
+        "music-director": ["mood", "event", "music_note", "rhythm_change", "dynamics"],
+        "script": ["scene", "event", "characters", "location"],
+    }
+    return _FALLBACK_RECOMMENDED.get(template, [])
+
+
+def _ensure_templates_loaded() -> None:
+    """Lazy initializer: load templates on first access if not already loaded."""
+    if not TEMPLATE_COLUMNS:
+        load_templates()
+
+
+# Deferred: load_templates() will be called after SKILL_ROOT is defined.
+# See _init_templates() call below SKILL_ROOT definition.
+
+
 DEFAULT_COLUMN_WIDTHS = {
     "shot_block": 12,
     "start_time": 14,
@@ -155,6 +368,9 @@ PREPARE_ENV_DEFAULT_FILES = {
 SKILL_ROOT = Path(__file__).resolve().parent.parent
 LOCAL_FFMPEG_BIN_ENV = "CUESHEET_CREATOR_FFMPEG_BIN_DIR"
 LOCAL_FFMPEG_SEARCH_ROOT = SKILL_ROOT / "tools" / "ffmpeg"
+
+# Initialize template system now that SKILL_ROOT is defined
+load_templates()
 
 # Runtime overrides set by --ffmpeg-path / --ffprobe-path CLI args.
 # These are populated in main() before any command runs.
@@ -2290,8 +2506,7 @@ def cmd_build_xlsx(args: argparse.Namespace) -> int:
 
     payload = json.loads(cue_json.read_text(encoding="utf-8"))
     template = args.template or payload.get("template") or "production"
-    if template not in TEMPLATE_COLUMNS:
-        raise ValueError(f"Unknown template: {template}")
+    validate_template_name(template)
 
     base_dir = Path(args.base_dir).resolve() if args.base_dir else cue_json.parent.resolve()
     rows = payload.get("rows", [])
@@ -2306,12 +2521,13 @@ def cmd_build_xlsx(args: argparse.Namespace) -> int:
     wrap_alignment = Alignment(wrap_text=True, vertical="top")
 
     columns = TEMPLATE_COLUMNS[template]
+    tmpl_widths = get_template_column_widths(template)
     for col_idx, column_name in enumerate(columns, start=1):
         cell = ws.cell(row=1, column=col_idx, value=column_name)
         cell.fill = header_fill
         cell.font = header_font
         cell.alignment = wrap_alignment
-        ws.column_dimensions[cell.column_letter].width = DEFAULT_COLUMN_WIDTHS.get(column_name, 18)
+        ws.column_dimensions[cell.column_letter].width = tmpl_widths.get(column_name, DEFAULT_COLUMN_WIDTHS.get(column_name, 18))
 
     keyframe_col_index = columns.index("keyframe") + 1 if "keyframe" in columns else None
 
@@ -2319,12 +2535,7 @@ def cmd_build_xlsx(args: argparse.Namespace) -> int:
     embedded_keyframes = 0
     missing_keyframes: list[str] = []
     empty_recommended_fields = 0
-    RECOMMENDED_FIELDS: dict[str, list[str]] = {
-        "production": ["scene", "event", "shot_size", "mood", "characters"],
-        "music-director": ["mood", "event", "music_note", "rhythm_change", "dynamics"],
-        "script": ["scene", "event", "characters", "location"],
-    }
-    rec_fields = RECOMMENDED_FIELDS.get(template, [])
+    rec_fields = get_recommended_fields(template)
 
     for row_idx, item in enumerate(rows, start=2):
         for col_idx, column_name in enumerate(columns, start=1):
@@ -2418,8 +2629,7 @@ def cmd_validate_cue_json(args: argparse.Namespace) -> int:
 
     payload = json.loads(cue_json.read_text(encoding="utf-8"))
     template = args.template or payload.get("template") or "production"
-    if template not in TEMPLATE_COLUMNS:
-        raise ValueError(f"Unknown template: {template}")
+    validate_template_name(template)
 
     rows = payload.get("rows", [])
     expected_columns = set(TEMPLATE_COLUMNS[template])
@@ -2485,12 +2695,7 @@ def cmd_validate_cue_json(args: argparse.Namespace) -> int:
                 warnings.append(f"{label}: '{nf}' contains temp name but needs_confirmation is empty.")
 
         # Per-template recommended field completeness
-        RECOMMENDED_FIELDS: dict[str, list[str]] = {
-            "production": ["scene", "event", "shot_size", "mood", "characters"],
-            "music-director": ["mood", "event", "music_note", "rhythm_change", "dynamics"],
-            "script": ["scene", "event", "characters", "location"],
-        }
-        for rec_field in RECOMMENDED_FIELDS.get(template, []):
+        for rec_field in get_recommended_fields(template):
             if rec_field in expected_columns and not str(row.get(rec_field, "")).strip():
                 warnings.append(f"{label}: recommended field '{rec_field}' is empty for template '{template}'.")
 
@@ -3034,12 +3239,7 @@ def cmd_normalize_fill(args: argparse.Namespace) -> int:
                     })
 
         # 5. Report empty required fields
-        RECOMMENDED_FIELDS: dict[str, list[str]] = {
-            "production": ["scene", "event", "shot_size", "mood", "characters"],
-            "music-director": ["mood", "event", "music_note", "rhythm_change", "dynamics"],
-            "script": ["scene", "event", "characters", "location"],
-        }
-        for rec_field in RECOMMENDED_FIELDS.get(template, []):
+        for rec_field in get_recommended_fields(template):
             if rec_field in set(columns) and not str(row.get(rec_field, "")).strip():
                 issues.append({
                     "block": block_id, "field": rec_field,
@@ -3268,8 +3468,7 @@ def cmd_export_md(args: argparse.Namespace) -> int:
 
     payload = json.loads(cue_json.read_text(encoding="utf-8"))
     template = args.template or payload.get("template") or "production"
-    if template not in TEMPLATE_COLUMNS:
-        raise ValueError(f"Unknown template: {template}")
+    validate_template_name(template)
 
     base_dir = Path(args.base_dir).resolve() if hasattr(args, "base_dir") and args.base_dir else cue_json.parent.resolve()
     rows = payload.get("rows", [])
@@ -3386,8 +3585,7 @@ def cmd_build_final_skeleton(args: argparse.Namespace) -> int:
         blocks = source.get("blocks") or source.get("draft_blocks", [])
 
     template = args.template or source.get("template") or "production"
-    if template not in TEMPLATE_COLUMNS:
-        raise ValueError(f"Unknown template: {template}")
+    validate_template_name(template)
 
     columns = TEMPLATE_COLUMNS[template]
     rows: list[dict[str, Any]] = []
@@ -3440,12 +3638,57 @@ def cmd_build_final_skeleton(args: argparse.Namespace) -> int:
     return 0
 
 
+def _strategy_weight_multipliers(strategy: str) -> dict[str, float]:
+    """Return weight multipliers for continuity scoring based on segmentation strategy.
+
+    Default strategy 'scene-cut' uses multiplier 1.0 for all (backward compat).
+    Other strategies adjust which signals matter more for merge decisions.
+    """
+    if strategy == "emotional-arc":
+        return {
+            "visual_similarity": 1.2,   # visual tone/color more important
+            "cut_weakness": 0.6,        # hard cuts less important
+            "same_tone": 1.5,           # tone continuity very important
+            "same_color_temp": 1.5,     # color temp continuity important
+            "asr_continuity": 0.8,      # dialogue less decisive
+            "short_block_bonus": 1.0,
+        }
+    if strategy == "action-event":
+        return {
+            "visual_similarity": 0.7,   # visual similarity less important
+            "cut_weakness": 0.8,
+            "same_tone": 0.8,
+            "same_color_temp": 0.5,
+            "asr_continuity": 1.5,      # dialogue/sound continuity very important
+            "short_block_bonus": 1.2,
+        }
+    if strategy == "narrative-beat":
+        return {
+            "visual_similarity": 0.9,
+            "cut_weakness": 1.0,
+            "same_tone": 1.0,
+            "same_color_temp": 0.8,
+            "asr_continuity": 1.3,      # dialogue continuity important for story
+            "short_block_bonus": 1.0,
+        }
+    # Default "scene-cut" and any unknown strategy: no adjustment
+    return {
+        "visual_similarity": 1.0,
+        "cut_weakness": 1.0,
+        "same_tone": 1.0,
+        "same_color_temp": 1.0,
+        "asr_continuity": 1.0,
+        "short_block_bonus": 1.0,
+    }
+
+
 def compute_block_continuity(
     block_a: dict[str, Any],
     block_b: dict[str, Any],
     sampled_frames: list[dict[str, Any]],
     asr_segments: list[dict[str, Any]],
     threshold: float = 0.65,
+    strategy: str = "scene-cut",
 ) -> dict[str, Any]:
     """Compute a continuity score between two adjacent blocks.
     Higher score = more likely candidates for merging."""
@@ -3489,15 +3732,24 @@ def compute_block_continuity(
     short_block = dur_a < 1.5 or dur_b < 1.5
     scores["short_block_bonus"] = 0.3 if short_block else 0.0
 
-    # Weighted total
-    total = (
-        scores.get("visual_similarity", 0.5) * 0.35
-        + scores.get("cut_weakness", 0.5) * 0.25
-        + scores.get("same_tone", 0) * 0.1
-        + scores.get("same_color_temp", 0) * 0.05
-        + scores.get("asr_continuity", 0) * 0.15
-        + scores.get("short_block_bonus", 0) * 0.1
-    )
+    # Weighted total with strategy-based multipliers
+    mults = _strategy_weight_multipliers(strategy)
+    base_weights = {
+        "visual_similarity": 0.35,
+        "cut_weakness": 0.25,
+        "same_tone": 0.10,
+        "same_color_temp": 0.05,
+        "asr_continuity": 0.15,
+        "short_block_bonus": 0.10,
+    }
+    raw_total = 0.0
+    weight_sum = 0.0
+    for key, base_w in base_weights.items():
+        adjusted_w = base_w * mults.get(key, 1.0)
+        raw_total += scores.get(key, 0) * adjusted_w
+        weight_sum += adjusted_w
+    # Normalize so the total is still in [0, 1]
+    total = raw_total / weight_sum if weight_sum > 0 else 0.0
 
     return {
         "block_a": block_a.get("shot_block", ""),
@@ -3526,12 +3778,18 @@ def cmd_suggest_merges(args: argparse.Namespace) -> int:
 
     threshold = float(args.threshold) if hasattr(args, "threshold") and args.threshold else 0.65
 
+    # Determine segmentation strategy from template
+    template_name = getattr(args, "template", None) or analysis.get("template") or "production"
+    seg = get_template_segmentation(template_name)
+    strategy = seg.get("strategy", "scene-cut") if seg else "scene-cut"
+
     # Compute pairwise continuity
     pairs: list[dict[str, Any]] = []
     for i in range(len(draft_blocks) - 1):
         pair = compute_block_continuity(
             draft_blocks[i], draft_blocks[i + 1], sampled_frames, asr_segments,
             threshold=threshold,
+            strategy=strategy,
         )
         pairs.append(pair)
 
@@ -3627,6 +3885,192 @@ def cmd_suggest_merges(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_list_templates(args: argparse.Namespace) -> int:
+    """List all available templates (built-in + custom)."""
+    templates_info: list[dict[str, Any]] = []
+    for name in sorted(TEMPLATE_COLUMNS.keys()):
+        tmpl = _TEMPLATE_REGISTRY.get(name, {})
+        seg = tmpl.get("segmentation", {})
+        templates_info.append({
+            "name": name,
+            "description": tmpl.get("description", ""),
+            "strategy": seg.get("strategy", "unknown") if seg else "unknown",
+            "columns": len(TEMPLATE_COLUMNS.get(name, [])),
+            "source": tmpl.get("_source", "unknown"),
+        })
+
+    if args.output_format == "json":
+        print(json.dumps({"templates": templates_info}, ensure_ascii=False, indent=2))
+    else:
+        print("=== Available Templates ===")
+        for t in templates_info:
+            source_tag = f"[{t['source']}]"
+            print(f"  {t['name']:20s} {source_tag:16s} strategy={t['strategy']:16s} columns={t['columns']}")
+            if t["description"]:
+                print(f"    {t['description']}")
+    return 0
+
+
+def cmd_show_template(args: argparse.Namespace) -> int:
+    """Show full details of a template."""
+    name = args.name
+    tmpl = get_template_definition(name)
+    if tmpl is None:
+        available = ", ".join(sorted(TEMPLATE_COLUMNS.keys()))
+        print(f"ERROR: Template '{name}' not found. Available: {available}", file=sys.stderr)
+        return 1
+
+    if args.output_format == "json":
+        # Remove internal fields
+        output = {k: v for k, v in tmpl.items() if not k.startswith("_")}
+        print(json.dumps(output, ensure_ascii=False, indent=2))
+    else:
+        print(f"=== Template: {name} ===")
+        print(f"  Description: {tmpl.get('description', '')}")
+        print(f"  Source: {tmpl.get('_source', 'unknown')}")
+        print(f"  Perspective: {tmpl.get('perspective', '(none)')}")
+        seg = tmpl.get("segmentation", {})
+        if seg:
+            print(f"\n  Segmentation:")
+            print(f"    Strategy: {seg.get('strategy', '')}")
+            print(f"    Description: {seg.get('description', '')}")
+            triggers = seg.get("split_triggers", [])
+            if triggers:
+                print(f"    Split triggers:")
+                for t in triggers:
+                    print(f"      - {t}")
+            bias = seg.get("merge_bias", [])
+            if bias:
+                print(f"    Merge bias:")
+                for b in bias:
+                    print(f"      - {b}")
+            kf = seg.get("keyframe_priority", [])
+            if kf:
+                print(f"    Keyframe priority:")
+                for k in kf:
+                    print(f"      - {k}")
+        cols = tmpl.get("columns", [])
+        if cols:
+            print(f"\n  Columns ({len(cols)}):")
+            for col in cols:
+                flags = []
+                if col.get("required"):
+                    flags.append("required")
+                if col.get("recommended"):
+                    flags.append("recommended")
+                if col.get("naming_field"):
+                    flags.append("naming")
+                ps = col.get("prefill_source")
+                if ps:
+                    flags.append(f"prefill:{ps}")
+                flag_str = f" ({', '.join(flags)})" if flags else ""
+                print(f"    - {col.get('field', ''):24s} \"{col.get('label', '')}\" width={col.get('width', 18)}{flag_str}")
+        guidance = tmpl.get("fill_guidance", [])
+        if guidance:
+            print(f"\n  Fill guidance:")
+            for g in guidance:
+                print(f"    - {g}")
+    return 0
+
+
+def cmd_save_template(args: argparse.Namespace) -> int:
+    """Validate and save a template JSON file to the custom templates directory."""
+    input_path = Path(args.input)
+    if not input_path.exists():
+        raise FileNotFoundError(f"Template input file not found: {input_path}")
+
+    data = json.loads(input_path.read_text(encoding="utf-8"))
+
+    # Validate
+    if args.validate or True:  # Always validate
+        errors = validate_template_json(data)
+        if errors:
+            print("=== Template validation FAILED ===", file=sys.stderr)
+            for e in errors:
+                print(f"  ✗ {e}", file=sys.stderr)
+            return 1
+
+    name = data.get("name", "")
+    if not name:
+        print("ERROR: Template must have a 'name' field.", file=sys.stderr)
+        return 1
+
+    # Check if it would overwrite a built-in
+    if name in _BUILTIN_TEMPLATE_NAMES and not args.overwrite:
+        print(f"ERROR: '{name}' is a built-in template. Use --overwrite to replace with a custom version.", file=sys.stderr)
+        return 1
+
+    custom_dir = SKILL_ROOT / "templates" / "custom"
+    custom_dir.mkdir(parents=True, exist_ok=True)
+    dest = custom_dir / f"{name}.json"
+
+    if dest.exists() and not args.overwrite:
+        print(f"ERROR: Custom template '{name}' already exists at {dest}. Use --overwrite to replace.", file=sys.stderr)
+        return 1
+
+    write_json(dest, data)
+
+    # Reload templates
+    load_templates()
+
+    # Print summary
+    seg = data.get("segmentation", {})
+    cols = data.get("columns", [])
+    print(f"=== Template saved: {name} ===")
+    print(f"  Path: {dest}")
+    print(f"  Description: {data.get('description', '')}")
+    print(f"  Segmentation strategy: {seg.get('strategy', 'unknown')}")
+    if seg.get("split_triggers"):
+        print(f"  Split triggers: {len(seg['split_triggers'])}")
+    if seg.get("merge_bias"):
+        print(f"  Merge bias rules: {len(seg['merge_bias'])}")
+    if seg.get("keyframe_priority"):
+        print(f"  Keyframe priority rules: {len(seg['keyframe_priority'])}")
+    print(f"  Columns: {len(cols)}")
+    for col in cols:
+        label = col.get("label", col.get("field", ""))
+        print(f"    - {label}")
+    return 0
+
+
+def cmd_delete_template(args: argparse.Namespace) -> int:
+    """Delete a custom template. Refuses to delete built-in templates."""
+    name = args.name
+
+    if name in _BUILTIN_TEMPLATE_NAMES:
+        tmpl = _TEMPLATE_REGISTRY.get(name, {})
+        source = tmpl.get("_source", "")
+        if source == "custom":
+            # A custom override of a built-in — delete the custom, built-in will resurface
+            pass
+        else:
+            print(f"ERROR: '{name}' is a built-in template and cannot be deleted.", file=sys.stderr)
+            return 1
+
+    tmpl = _TEMPLATE_REGISTRY.get(name)
+    if tmpl is None:
+        available = ", ".join(sorted(TEMPLATE_COLUMNS.keys()))
+        print(f"ERROR: Template '{name}' not found. Available: {available}", file=sys.stderr)
+        return 1
+
+    source = tmpl.get("_source", "")
+    if source == "built-in" or source == "hardcoded-fallback":
+        print(f"ERROR: '{name}' is a built-in template and cannot be deleted.", file=sys.stderr)
+        return 1
+
+    template_path = tmpl.get("_path")
+    if not template_path or not Path(template_path).exists():
+        print(f"ERROR: Template file not found: {template_path}", file=sys.stderr)
+        return 1
+
+    Path(template_path).unlink()
+    load_templates()
+
+    print(f"Deleted custom template: {name}")
+    print(f"  Removed: {template_path}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="cuesheet-creator minimal toolkit")
     parser.add_argument("--version", action="version", version=f"cuesheet-creator {__version__}")
@@ -3699,9 +4143,8 @@ def build_parser() -> argparse.ArgumentParser:
     draft.add_argument("--output", type=resolved_path, required=True, help="Output Markdown path")
     draft.add_argument(
         "--template",
-        choices=["production", "music-director", "script"],
         default="production",
-        help="Draft template type",
+        help="Template name (default: production). Use list-templates to see available templates.",
     )
     draft.set_defaults(func=cmd_draft_from_analysis)
 
@@ -3711,8 +4154,7 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("--base-dir", type=resolved_path, help="Base directory for resolving relative keyframe paths")
     build.add_argument(
         "--template",
-        choices=["production", "music-director", "script"],
-        help="Override template in cue JSON",
+        help="Override template in cue JSON. Use list-templates to see available templates.",
     )
     build.add_argument("--image-max-width", type=int, default=180)
     build.add_argument("--image-max-height", type=int, default=100)
@@ -3722,8 +4164,7 @@ def build_parser() -> argparse.ArgumentParser:
     validate.add_argument("--cue-json", type=resolved_path, required=True, help="Cue JSON to validate")
     validate.add_argument(
         "--template",
-        choices=["production", "music-director", "script"],
-        help="Override template for field validation",
+        help="Override template for field validation. Use list-templates to see available templates.",
     )
     validate.add_argument("--report-out", type=resolved_path, help="Write validation report JSON")
     validate.add_argument("--base-dir", type=resolved_path, help="Base directory for resolving relative keyframe paths (used with --check-files)")
@@ -3764,6 +4205,7 @@ def build_parser() -> argparse.ArgumentParser:
     suggest.add_argument("--analysis-json", type=resolved_path, required=True, help="Path to analysis.json")
     suggest.add_argument("--output", type=resolved_path, required=True, help="Output suggested merge plan JSON")
     suggest.add_argument("--threshold", type=float, default=0.65, help="Continuity score threshold for merge suggestion (0.0-1.0, default 0.65)")
+    suggest.add_argument("--template", default=None, help="Template name for strategy-aware weight adjustment (reads from analysis.json if not specified)")
     suggest.set_defaults(func=cmd_suggest_merges)
 
     export_md = subparsers.add_parser("export-md", help="Generate Markdown final from final_cues.json")
@@ -3772,8 +4214,7 @@ def build_parser() -> argparse.ArgumentParser:
     export_md.add_argument("--base-dir", type=resolved_path, help="Base directory for resolving relative keyframe paths")
     export_md.add_argument(
         "--template",
-        choices=["production", "music-director", "script"],
-        help="Override template in cue JSON",
+        help="Override template in cue JSON. Use list-templates to see available templates.",
     )
     export_md.set_defaults(func=cmd_export_md)
 
@@ -3782,13 +4223,32 @@ def build_parser() -> argparse.ArgumentParser:
     skeleton.add_argument("--output", type=resolved_path, required=True, help="Output final_cues.json skeleton path")
     skeleton.add_argument(
         "--template",
-        choices=["production", "music-director", "script"],
         default="production",
-        help="Template for field selection",
+        help="Template for field selection. Use list-templates to see available templates.",
     )
     skeleton.add_argument("--video-title", default=None, help="Video title for the skeleton")
     skeleton.add_argument("--source-path", type=resolved_path, default=None, help="Video source path override (for merged input that lacks video metadata)")
     skeleton.set_defaults(func=cmd_build_final_skeleton)
+
+    # --- Template management commands ---
+    list_tmpl = subparsers.add_parser("list-templates", help="List all available templates (built-in + custom)")
+    list_tmpl.add_argument("--output-format", choices=["text", "json"], default="text")
+    list_tmpl.set_defaults(func=cmd_list_templates)
+
+    show_tmpl = subparsers.add_parser("show-template", help="Show full details of a template")
+    show_tmpl.add_argument("--name", required=True, help="Template name to show")
+    show_tmpl.add_argument("--output-format", choices=["text", "json"], default="text")
+    show_tmpl.set_defaults(func=cmd_show_template)
+
+    save_tmpl = subparsers.add_parser("save-template", help="Validate and save a template JSON to custom templates directory")
+    save_tmpl.add_argument("--input", type=resolved_path, required=True, help="Path to template JSON file")
+    save_tmpl.add_argument("--validate", action="store_true", default=True, help="Validate template JSON (default: always on)")
+    save_tmpl.add_argument("--overwrite", action="store_true", help="Overwrite existing template with same name")
+    save_tmpl.set_defaults(func=cmd_save_template)
+
+    del_tmpl = subparsers.add_parser("delete-template", help="Delete a custom template (built-in templates cannot be deleted)")
+    del_tmpl.add_argument("--name", required=True, help="Template name to delete")
+    del_tmpl.set_defaults(func=cmd_delete_template)
 
     return parser
 

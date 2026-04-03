@@ -14,6 +14,8 @@ Turn a single video into a "discussable, confirmable, deliverable" cue sheet. Th
 - User wants structural analysis first, then one of three template outputs: production / music-director / script.
 - User needs to confirm character, scene, and prop naming before generating final deliverables.
 - User needs to capture video discussions into a reusable director/production/music collaboration document.
+- User wants to create or customize a cue sheet template for a specific department or workflow.
+- User mentions a specific role (e.g. "sound designer", "VFX supervisor") not covered by built-in templates.
 
 ## When NOT to trigger
 
@@ -43,7 +45,7 @@ Everything else has sensible defaults. If the user provides only a video, the ag
 
 | Input | Default | When to ask |
 |---|---|---|
-| Output template | `production` | Only if user mentions music/scoring or script/story focus |
+| Output template | `production` | Only if user mentions music/scoring, script/story focus, or a specific department role. Custom templates supported — use `list-templates` to see options. |
 | Output directory | `<video-dir>/<video-stem>_cuesheet/` | Only if user wants output elsewhere |
 | ASR (speech recognition) | Off | Offer if dialogue analysis is needed |
 | OCR (on-screen text) | Off | Offer if video has subtitles/UI text |
@@ -336,6 +338,8 @@ The JSON file has `fill_status: "partial"` (when pre-fills exist) or `"pending"`
 
 For each shot block, use the corresponding keyframe to fill in fields using these rules:
 
+> **Template-aware fill-in**: The rules below are the DEFAULT rules for the 3 built-in templates. When using a **custom template**, the template's `perspective`, `segmentation.split_triggers`, and `segmentation.keyframe_priority` fields override these defaults. Read the active template's definition (via `show-template --name <name> --output-format json`) to get the specific rules. The template's `fill_guidance` field provides column-specific instructions.
+
 **Visual cue → field mapping rules:**
 
 | You observe in the keyframe… | Field | Fill with |
@@ -447,6 +451,8 @@ Blocks with continuity score ≥ 0.65 are suggested for merging. The output is a
 
 **This step is still partly executed by the LLM.** Based on Step 3 fill-in results AND the auto-suggested merge plan, apply these trigger priorities:
 
+> **Template-aware merging**: The tier rules below are the DEFAULT rules for the `production` template (strategy: `scene-cut`). When using a **custom template**, the template's `segmentation.merge_bias` rules override the Tier 2/3 defaults. Tier 1 (must-split) rules always apply regardless of template. The `suggest-merges` command automatically adjusts its continuity scoring weights based on the template's segmentation strategy — for example, an `emotional-arc` strategy weights visual tone/color similarity higher and hard cuts lower than `scene-cut`.
+
 **Tier 1: Must split**
 
 - Scene change
@@ -538,6 +544,8 @@ python scripts/cuesheet_creator.py export-md --cue-json <out-dir>/final_cues.jso
 
 Field definitions in `references/field-templates.md`.
 
+> **Custom templates**: In addition to the 3 built-in templates below, users can create custom templates for specific departments or workflows. Custom templates are stored as JSON in `templates/custom/` and define not just columns but also segmentation strategy, keyframe selection criteria, and block merging bias. Use `list-templates` to see all available templates. See the **Custom templates** section below for the guided creation workflow.
+
 ### production (default)
 
 For director, producer, art, cinematography, and sound cross-department collaboration.
@@ -614,6 +622,103 @@ For story discussion and early-stage breakdown.
   "confidence": "segment=high; dialogue=low (no ASR, dialogue inferred from visuals)",
   "needs_confirmation": "character official name; rooftop project name"
 }
+```
+
+---
+
+## Custom templates
+
+Templates control not just **columns** (what information each shot block captures), but also **segmentation strategy** (what constitutes a block boundary), **keyframe selection** (what makes a frame representative), and **block merging bias** (what continuity signals matter). Different perspectives need fundamentally different rules — a sound designer splits on action events, while a music director splits on emotional transitions.
+
+### When to trigger guided template creation
+
+- User asks for a template that doesn't exist (e.g. "I need a cue sheet for sound design")
+- User wants custom columns for their specific workflow
+- User mentions a specific department or role not covered by built-in templates (sound design, VFX, color grading, etc.)
+- User says "create a template" or "customize the template"
+
+### Guided creation workflow
+
+#### Phase 1: Discovery (LLM-driven conversation)
+
+Ask the user one question at a time. Infer when possible — if the user gives a clear role (e.g. "sound designer"), infer most answers and jump to drafting, only confirming ambiguous points.
+
+1. "What is this template for? Who will read the cue sheet?"
+   → Determines `name`, `description`, `perspective`
+2. "What should define where one shot block ends and another begins? What kind of transitions matter most for your work?"
+   → Determines `segmentation.strategy`, `split_triggers`, `merge_bias`
+3. "When you look at a representative frame for a block, what should it show you?"
+   → Determines `segmentation.keyframe_priority`
+4. "What information do you need for each shot block?"
+   → Determines `columns`
+5. "Should dialogue/speech be included?" → ASR prefill column
+6. "Should on-screen text be captured?" → OCR prefill column
+7. "Any naming entities to track?" → naming_field columns
+
+#### Phase 2: Draft generation (LLM generates, script validates)
+
+Generate a template JSON and save via:
+```bash
+python scripts/cuesheet_creator.py save-template --input <template.json> --validate
+```
+
+`save-template` validates:
+- Required fields present (name, description, perspective, segmentation, columns)
+- Field names valid, no duplicates, no conflicts with structural columns
+- Segmentation has valid strategy with split_triggers, merge_bias, keyframe_priority
+- If validation passes: saves to `templates/custom/<name>.json`
+- If fails: prints specific errors for LLM to fix
+
+Present the summary to the user:
+> "I've drafted a 'sound-design' template:
+> - **Segmentation**: splits on action events (impacts, ambience changes, vehicle passes)
+> - **Keyframes**: prioritize peak action moments and sound source visibility
+> - **Merge bias**: merge across visual cuts if ambient sound is continuous
+> - **Columns** (8): Ambience Zone, Sound Events, Foley Notes, Scene, Event, Dialogue (auto-ASR), Confidence, Needs Confirmation
+>
+> Want to adjust anything?"
+
+#### Phase 3: Iteration
+
+User can say:
+- "Add a column for reverb character"
+- "Actually, split on every hard cut too, not just sound events"
+- "Make the keyframe show the widest shot of the space, not the action moment"
+- "Rename it to 'sfx-breakdown'"
+
+LLM modifies the template JSON and re-validates until user approves.
+
+### How segmentation strategy affects the workflow
+
+The `segmentation` field is consumed at **two levels**:
+
+**Level 1 — Script (mechanical):**
+- `scan-video` always produces the same raw scene candidates (scene detection is algorithm-constant)
+- `suggest-merges` adjusts continuity scoring weights based on the template's strategy:
+  - `emotional-arc`: higher weight on visual tone/color similarity, lower on hard cuts
+  - `action-event`: lower weight on visual similarity, higher on ASR/sound continuity
+  - `scene-cut` (default): standard weights (backward compatible)
+- The `split_triggers` are stored in `agent_summary` for LLM consumption
+
+**Level 2 — LLM (semantic):**
+- During Step 3b fill-in: uses `split_triggers` and `keyframe_priority` to judge block boundaries and select representative frames
+- During Step 5 merge review: uses `merge_bias` instead of the default tier rules
+- The `perspective` text guides the overall fill-in approach
+
+### Template management commands
+
+```bash
+# List all available templates
+python scripts/cuesheet_creator.py list-templates [--output-format text|json]
+
+# Show full details of a template
+python scripts/cuesheet_creator.py show-template --name <name> [--output-format text|json]
+
+# Validate and save a new template
+python scripts/cuesheet_creator.py save-template --input <path> [--overwrite]
+
+# Delete a custom template (built-in templates cannot be deleted)
+python scripts/cuesheet_creator.py delete-template --name <name>
 ```
 
 ---
@@ -740,7 +845,7 @@ Detailed checklist in `references/review-checklist.md`. Core checks:
 | `scan-video` | Extract frames + scene detection + optional ASR/OCR + output analysis.json. Default output: `<video-dir>/<video-name>_cuesheet/`. Supports `--start-time` / `--end-time` for clip range. |
 | `draft-from-analysis` | Generate template-differentiated draft skeleton from analysis.json |
 | `merge-blocks` | Merge draft blocks based on a merge plan (with validation). Unreferenced blocks are auto-appended with `"unmerged": true` flag (not silently dropped). Use `--strict` to fail on unreferenced blocks instead. |
-| `suggest-merges` | Auto-compute inter-block continuity scores and output a suggested merge plan. LLM reviews and adjusts before passing to `merge-blocks`. Use `--threshold` to adjust sensitivity (default 0.65). |
+| `suggest-merges` | Auto-compute inter-block continuity scores and output a suggested merge plan. LLM reviews and adjusts before passing to `merge-blocks`. Use `--threshold` to adjust sensitivity (default 0.65). Use `--template` to adjust scoring weights based on template segmentation strategy. |
 | `build-final-skeleton` | Generate final_cues.json skeleton from merged/draft blocks or filled draft_fill.json |
 | `apply-naming` | Batch-apply naming overrides (field-scoped JSON, full-text MD). Supports `--dry-run` / `--output`. |
 | `derive-naming-tables` | Scan filled `draft_fill.json` for `temp:` markers, deduplicate, aggregate block references, output `naming_tables.json`. Optionally updates `cue_sheet.md` with derived naming tables (`--md`). |
@@ -748,3 +853,7 @@ Detailed checklist in `references/review-checklist.md`. Core checks:
 | `validate-cue-json` | Structural validation (time, required fields, duplicates) + quality warnings (empty recommended fields, temp-name consistency) + delivery readiness check. `Valid: YES` means no structural errors; `Delivery ready: YES` means all recommended fields are filled and naming is consistent. |
 | `export-md` | Generate Markdown final from final_cues.json |
 | `build-xlsx` | Generate Excel final from final_cues.json |
+| `list-templates` | List all available templates (built-in + custom) with name, description, strategy, column count, and source. |
+| `show-template` | Show full details of a template: columns, segmentation strategy, split triggers, merge bias, keyframe priority, perspective, fill guidance. |
+| `save-template` | Validate and save a template JSON to `templates/custom/`. Validates schema, checks required fields, saves on success. Use `--overwrite` to replace existing. |
+| `delete-template` | Delete a custom template. Built-in templates cannot be deleted. |

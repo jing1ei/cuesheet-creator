@@ -1,0 +1,67 @@
+{
+  "name": "production",
+  "description": "For director, producer, art, cinematography, and sound cross-department collaboration",
+
+  "perspective": "Prioritize what needs cross-department alignment in this segment. Clarify space, composition, relationships, execution risks. director_note covers camera language and production coordination points — no vague commentary.",
+
+  "segmentation": {
+    "strategy": "scene-cut",
+    "description": "Split blocks on scene/camera language changes. Standard collaborative shot block granularity for multi-department discussion.",
+    "split_triggers": [
+      "Scene change (new location, new setup)",
+      "Time-layer change (reality / flashback / dream / white-out)",
+      "Narrative function change (establishing / dialogue / payoff / flashback / epilogue)",
+      "Visual format change (storyboard / CG / hand-drawn / UI)",
+      "Dominant camera language change",
+      "Dominant mood change"
+    ],
+    "merge_bias": [
+      "Merge minor reverse shots within the same functional block",
+      "Merge brief insert shots within the same functional block",
+      "Merge shot size changes that don't change block function",
+      "Do NOT merge across scene changes or narrative function changes"
+    ],
+    "keyframe_priority": [
+      "Frame that best represents the block's dominant composition",
+      "Frame that best shows character relationships",
+      "Frame that best shows key props / actions",
+      "For transition blocks, frame with the clearest visual format"
+    ]
+  },
+
+  "columns": [
+    {"field": "shot_block", "label": "Shot Block", "width": 12, "required": true, "recommended": false, "naming_field": false, "prefill_source": "structural"},
+    {"field": "start_time", "label": "Start", "width": 14, "required": true, "recommended": false, "naming_field": false, "prefill_source": "structural"},
+    {"field": "end_time", "label": "End", "width": 14, "required": true, "recommended": false, "naming_field": false, "prefill_source": "structural"},
+    {"field": "keyframe", "label": "Keyframe", "width": 24, "required": true, "recommended": false, "naming_field": false, "prefill_source": "structural"},
+    {"field": "shot_size", "label": "Shot Size", "width": 12, "required": true, "recommended": true, "naming_field": false, "prefill_source": null},
+    {"field": "angle_or_lens", "label": "Angle/Lens", "width": 20, "required": true, "recommended": false, "naming_field": false, "prefill_source": null},
+    {"field": "motion", "label": "Motion", "width": 18, "required": true, "recommended": false, "naming_field": false, "prefill_source": null},
+    {"field": "scene", "label": "Scene", "width": 18, "required": true, "recommended": true, "naming_field": true, "prefill_source": null},
+    {"field": "mood", "label": "Mood", "width": 20, "required": true, "recommended": true, "naming_field": false, "prefill_source": "visual_mood"},
+    {"field": "location", "label": "Location", "width": 18, "required": true, "recommended": false, "naming_field": true, "prefill_source": null},
+    {"field": "characters", "label": "Characters", "width": 20, "required": true, "recommended": true, "naming_field": true, "prefill_source": null},
+    {"field": "event", "label": "Event", "width": 28, "required": true, "recommended": true, "naming_field": false, "prefill_source": null},
+    {"field": "important_dialogue", "label": "Dialogue", "width": 30, "required": false, "recommended": false, "naming_field": false, "prefill_source": "asr"},
+    {"field": "music_note", "label": "Music Note", "width": 28, "required": false, "recommended": false, "naming_field": false, "prefill_source": null},
+    {"field": "director_note", "label": "Director Note", "width": 28, "required": false, "recommended": false, "naming_field": false, "prefill_source": null},
+    {"field": "confidence", "label": "Confidence", "width": 18, "required": false, "recommended": false, "naming_field": false, "prefill_source": "confidence"},
+    {"field": "needs_confirmation", "label": "Needs Confirmation", "width": 24, "required": false, "recommended": false, "naming_field": false, "prefill_source": "needs_confirmation"}
+  ],
+
+  "fill_guidance": [
+    "**shot_size**: WS / MS / CU / EWS / ECU",
+    "**angle_or_lens**: front / OTS / low angle / high angle / eye-level",
+    "**motion**: static / push-in / pull-out / pan / tracking / handheld",
+    "**scene**: location/setup name (use `temp: xxx` if unconfirmed)",
+    "**mood**: emotional tone of the block",
+    "**location**: where this takes place",
+    "**characters**: who is present (use `temp: xxx` if unconfirmed)",
+    "**event**: what happens in this block",
+    "**important_dialogue**: key dialogue lines",
+    "**music_note**: music entry/exit/change suggestions",
+    "**director_note**: camera language, cross-dept coordination points",
+    "**confidence**: e.g. `segment=high; names=low`",
+    "**needs_confirmation**: items that need user confirmation"
+  ]
+}
