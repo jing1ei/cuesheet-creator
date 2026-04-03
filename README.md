@@ -78,6 +78,8 @@ python3 scripts/cuesheet_creator.py prepare-env --mode install-required --out-di
 Video → scan-video → analysis.json (with agent_summary + visual_features) + keyframes/
      → draft-from-analysis → cue_sheet.md + draft_fill.json (auto-prefilled: ASR dialogue, confidence, mood hints, OCR)
      → LLM fills remaining fields in draft_fill.json
+     → normalize-fill --fix (standardize enums, strip hint prefixes)
+     → derive-naming-tables (auto-extract temp: markers → naming_tables.json)
      → Naming confirmation gate
      → suggest-merges → suggested_merges.json (auto-scored continuity)
      → LLM reviews merge suggestions for narrative boundaries
@@ -100,6 +102,8 @@ Video → scan-video → analysis.json (with agent_summary + visual_features) + 
 | `merge-blocks` | Merge draft blocks based on a merge plan (validated) |
 | `build-final-skeleton` | Generate final_cues.json from draft_fill.json, merged blocks, or analysis.json |
 | `apply-naming` | Batch-apply naming overrides |
+| `derive-naming-tables` | **Scan filled JSON for `temp:` markers** and generate structured naming confirmation tables (`naming_tables.json`). Optionally updates `cue_sheet.md`. |
+| `normalize-fill` | **Normalize/lint LLM-filled JSON**: standardize `shot_size`/`motion` enums, strip hint prefixes, check `temp:` marker consistency, report empty fields. Use `--fix` to auto-normalize. |
 | `validate-cue-json` | Structural + delivery readiness validation (`--check-files` recommended before export) |
 | `export-md` | Generate Markdown final from final_cues.json |
 | `build-xlsx` | Generate Excel final with embedded keyframes |

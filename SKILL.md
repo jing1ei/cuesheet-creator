@@ -743,6 +743,8 @@ Detailed checklist in `references/review-checklist.md`. Core checks:
 | `suggest-merges` | Auto-compute inter-block continuity scores and output a suggested merge plan. LLM reviews and adjusts before passing to `merge-blocks`. Use `--threshold` to adjust sensitivity (default 0.65). |
 | `build-final-skeleton` | Generate final_cues.json skeleton from merged/draft blocks or filled draft_fill.json |
 | `apply-naming` | Batch-apply naming overrides (field-scoped JSON, full-text MD). Supports `--dry-run` / `--output`. |
+| `derive-naming-tables` | Scan filled `draft_fill.json` for `temp:` markers, deduplicate, aggregate block references, output `naming_tables.json`. Optionally updates `cue_sheet.md` with derived naming tables (`--md`). |
+| `normalize-fill` | Normalize/lint LLM-filled JSON. Standardizes `shot_size` (WS/MS/CU/EWS/ECU) and `motion` enums, strips `[visual: ...]` / `[OCR detected: ...]` hint prefixes, checks `temp:` marker consistency with `needs_confirmation`, reports empty required fields. Use `--fix` to auto-normalize + write; default is lint-only. |
 | `validate-cue-json` | Structural validation (time, required fields, duplicates) + quality warnings (empty recommended fields, temp-name consistency) + delivery readiness check. `Valid: YES` means no structural errors; `Delivery ready: YES` means all recommended fields are filled and naming is consistent. |
 | `export-md` | Generate Markdown final from final_cues.json |
 | `build-xlsx` | Generate Excel final from final_cues.json |
