@@ -73,9 +73,9 @@ The agent **MUST stop and wait for user response** at these points. Do NOT auto-
 | # | Checkpoint | When | What to ask |
 |---|---|---|---|
 | **C1** | FFmpeg missing | After Step 1 selfcheck | Guide installation (one option at a time per Step 1.5) |
-| **C2** | Draft review + naming + final confirmation | After Phase A export (Excel + Markdown generated with `temp:` markers) | Present the Excel/Markdown deliverable first. Then: "这是初版 cue sheet（临时名称用 temp: 标注）。要替换这些临时名称吗？还是先用这版？" |
+| **C2** | Draft review + naming + final confirmation | After Phase A export (Excel + Markdown generated with `temp:` markers) | Present the Excel/Markdown deliverable first. Then: "Here's the draft cue sheet (temporary names marked with temp:). Want to replace them with official names, or use this version as-is?" |
 
-> **Design rationale for C2**: Users understand naming better when they can **see** the cue sheet with `temp:` markers in context — in the actual Excel layout with keyframes — rather than staring at an abstract naming confirmation table. So we generate the full deliverable first (with `temp:` markers and `delivery_ready: NO`), show it, and THEN offer naming replacement as an optional refinement step. If the user provides names, apply them and re-export. If the user says "先这样" / "skip naming", deliver as-is.
+> **Design rationale for C2**: Users understand naming better when they can **see** the cue sheet with `temp:` markers in context — in the actual Excel layout with keyframes — rather than staring at an abstract naming confirmation table. So we generate the full deliverable first (with `temp:` markers and `delivery_ready: NO`), show it, and THEN offer naming replacement as an optional refinement step. If the user provides names, apply them and re-export. If the user says "use as-is" / "skip naming", deliver as-is.
 
 **Previous C3 (template + final confirmation) is absorbed into C2.** Template is now confirmed in Step 0 upfront, so no need for a separate pre-export gate.
 
@@ -100,15 +100,15 @@ The agent **MUST** emit a short status line to the user at these points. These a
 
 | When | What to say (example) |
 |---|---|
-| Before `prepare-env` / `install-deps` starts | `⏳ 正在检查运行环境…` |
-| After env check, before `scan-video` starts | `⏳ 环境就绪，开始扫描视频…` |
-| If `scan-video` runs >30s (long video) | `⏳ 视频扫描中（已采样 N 帧）…` |
-| After `scan-video` completes | `✅ 扫描完成：N 个候选切点，M 张关键帧` |
-| If ASR/OCR degrades or fails | `⚠️ 语音识别不可用，将依赖 OCR 字幕/纯画面分析` |
-| Before starting keyframe batch fill-in | `⏳ 开始逐批查看关键帧并填写语义信息（共 N 批）…` |
-| After each keyframe batch is filled | `[进度] 已完成 X/N 批（Y/Z blocks）` |
-| Before export step starts | `⏳ 正在生成 Excel + Markdown…` |
-| After export completes | `✅ 已生成 cue_sheet.xlsx 和 cue_sheet.md` |
+| Before `prepare-env` / `install-deps` starts | `Checking runtime environment...` |
+| After env check, before `scan-video` starts | `Environment ready. Starting video scan...` |
+| If `scan-video` runs >30s (long video) | `Scanning video (sampled N frames so far)...` |
+| After `scan-video` completes | `Scan complete: N scene candidates, M keyframes extracted.` |
+| If ASR/OCR degrades or fails | `ASR unavailable — will rely on OCR subtitles / visual-only analysis.` |
+| Before starting keyframe batch fill-in | `Starting keyframe review and semantic fill-in (N batches total)...` |
+| After each keyframe batch is filled | `[progress] Completed batch X/N (Y/Z blocks filled)` |
+| Before export step starts | `Generating Excel + Markdown deliverables...` |
+| After export completes | `Done: cue_sheet.xlsx and cue_sheet.md generated.` |
 
 **Rule**: If any single operation (command execution, keyframe viewing, file writing) is expected to take >30 seconds, emit a progress signal BEFORE starting it. If a multi-batch operation (like keyframe fill-in) will take multiple rounds, emit progress AFTER each round.
 
@@ -200,9 +200,9 @@ A cue sheet is **not delivery-ready** if any of these fail:
 
 **Exactly one question, before anything else:**
 
-> "收到视频。这份 Cue Sheet 主要给谁用？（默认走通用制片模板 `production`，也可以选 `music-director` / `script`，或者告诉我你的部门/角色，我来帮你匹配。）"
+> "Got the video. Who is this cue sheet for? (Default is the general `production` template. You can also pick `music-director` / `script`, or tell me your department/role and I'll match a template.)"
 
-If the user's answer clearly maps to a built-in template → use it. If the user describes a role not covered → trigger the custom template guided creation flow (see **Custom templates** section). If the user says "默认" or just wants to get started → use `production`.
+If the user's answer clearly maps to a built-in template → use it. If the user describes a role not covered → trigger the custom template guided creation flow (see **Custom templates** section). If the user says "default" or just wants to get started → use `production`.
 
 **Only proceed to Step 1 after template is confirmed.** This avoids re-doing analysis with different segmentation strategies later.
 
@@ -270,9 +270,9 @@ python scripts/cuesheet_creator.py prepare-env --mode install-all --out-dir <out
 
 | Platform | What to tell the user |
 |---|---|
-| **Windows** | "请从 https://www.gyan.dev/ffmpeg/builds/ 下载 **essentials build** 的 zip 文件，解压后把整个文件夹放到 `<skill-root>/tools/ffmpeg/` 下面（最终路径类似 `tools/ffmpeg/ffmpeg-7.x-essentials_build/bin/ffmpeg.exe`）。不需要改系统 PATH，cuesheet-creator 会自动找到它。放好后告诉我，我来验证。" |
-| **macOS** | "请在终端运行 `brew install ffmpeg`，装完后告诉我，我来验证。" |
-| **Linux** | "请运行 `sudo apt install ffmpeg`（或你发行版对应的命令），装完后告诉我，我来验证。" |
+| **Windows** | "Download the **essentials build** zip from https://www.gyan.dev/ffmpeg/builds/. Extract it and place the whole folder under `<skill-root>/tools/ffmpeg/` (final path should look like `tools/ffmpeg/ffmpeg-7.x-essentials_build/bin/ffmpeg.exe`). No PATH changes needed — cuesheet-creator will auto-detect it. Let me know when it's done and I'll verify." |
+| **macOS** | "Run `brew install ffmpeg` in Terminal. Let me know when it's done and I'll verify." |
+| **Linux** | "Run `sudo apt install ffmpeg` (or the equivalent for your distro). Let me know when it's done and I'll verify." |
 
 **After user confirms**, re-run:
 
@@ -287,7 +287,7 @@ Look for `ffmpeg : OK [source]` and `ffprobe: OK [source]` in the output.
 Troubleshoot in this order:
 
 1. **Windows portable**: Did they extract to the right location? `<skill-root>/tools/ffmpeg/` should contain either `bin/ffmpeg.exe` directly or `<release-folder>/bin/ffmpeg.exe` one level down.
-2. **macOS/Linux package install**: The install command might have succeeded but the current shell session doesn't see it yet. Tell the user: "请关闭当前终端窗口，重新打开一个新的，然后告诉我。"（Concrete action, not abstract "PATH" concepts.）
+2. **macOS/Linux package install**: The install command might have succeeded but the current shell session doesn't see it yet. Tell the user: "Please close this terminal window and open a new one, then let me know." (Concrete action, not abstract "PATH" concepts.)
 3. **Direct path override** (escape hatch — offer only if steps above didn't resolve):
 
 ```bash
@@ -296,7 +296,7 @@ python scripts/cuesheet_creator.py --ffmpeg-path /full/path/to/ffmpeg --ffprobe-
 
 **Round 3 — only if user explicitly asks for alternatives:**
 
-Offer package manager install: `winget install Gyan.FFmpeg` / `scoop install ffmpeg` / `choco install ffmpeg`. After install, tell the user: "请关闭当前 PowerShell 窗口，重新打开一个新窗口，然后告诉我——我会重新检查。"
+Offer package manager install: `winget install Gyan.FFmpeg` / `scoop install ffmpeg` / `choco install ffmpeg`. After install, tell the user: "Please close this PowerShell window and open a new one, then let me know — I'll re-check."
 
 **Key principle:** Never dump all options at once. One instruction → verify → next fallback only if needed.
 
@@ -304,7 +304,7 @@ Post-check rules:
 
 - `ffmpeg` / `ffprobe` missing → **Stop**, provide install guidance as above.
 - Required Python packages missing → Based on user choice, stop at check or continue installing.
-- SceneDetect missing → **Continue** (histogram fallback works), but mention to the user: "场景检测目前用的是基础模式。如果你的视频有很多溶解或渐变转场，可以安装 scenedetect 提升准确度。需要我帮你装吗？" If user says yes, run `prepare-env --mode install-scene --out-dir <out-dir>` and re-run scan-video.
+- SceneDetect missing → **Continue** (histogram fallback works), but mention to the user: "Scene detection is using basic mode. If your video has many dissolves or gradual transitions, installing scenedetect can improve accuracy. Want me to install it?" If user says yes, run `prepare-env --mode install-scene --out-dir <out-dir>` and re-run scan-video.
 - Optional ASR missing → Continue, but mark "dialogue confidence degraded."
 - Optional OCR missing → Continue, skip on-screen text recognition.
 
@@ -455,8 +455,8 @@ python scripts/cuesheet_creator.py export-md --cue-json <out-dir>/final_cues.jso
 
 **Present the deliverable to the user** (this is checkpoint **C2**):
 
-> "这是初版 Cue Sheet。临时名称（temp: xxx）还没替换。你可以先看看整体结构和内容是否合理。
-> 要替换临时名称吗？还是先用这版？"
+> "Here's the draft Cue Sheet. Temporary names (temp: xxx) haven't been replaced yet. Take a look at the overall structure and content first.
+> Want to replace the temporary names? Or use this version as-is?"
 
 ### Step 4b: Naming refinement (optional, only if user provides names)
 
@@ -470,7 +470,7 @@ python scripts/cuesheet_creator.py apply-naming --overrides <naming_overrides.js
 python scripts/cuesheet_creator.py build-xlsx --cue-json <out-dir>/final_cues.json --output <out-dir>/cue_sheet.xlsx --base-dir <out-dir>
 ```
 
-If user says "先这样" or "skip naming" → deliver the current version as-is. Note unconfirmed items in the pending column.
+If user says "use as-is" or "skip naming" → deliver the current version as-is. Note unconfirmed items in the pending column.
 
 If user doesn't respond → Allow continuation, keep "temp:" markers in final, explicitly list unconfirmed items in the pending column.
 
