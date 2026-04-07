@@ -1371,7 +1371,7 @@ def test_save_and_delete_custom_template():
         input_path.write_text(json.dumps(custom_tmpl), encoding="utf-8")
 
         # Save
-        args = argparse.Namespace(input=str(input_path), validate=True, overwrite=False)
+        args = argparse.Namespace(input=str(input_path), overwrite=False)
         result = cc.cmd_save_template(args)
         assert result == 0, "save-template should succeed"
 

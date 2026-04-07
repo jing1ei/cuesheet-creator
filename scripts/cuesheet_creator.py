@@ -2,7 +2,7 @@
 """cuesheet-creator — turn a single video into a collaborative cue sheet."""
 from __future__ import annotations
 
-__version__ = "1.4.0"
+__version__ = "1.4.1"
 
 import argparse
 import copy
@@ -182,8 +182,10 @@ def validate_template_json(data: dict[str, Any]) -> list[str]:
 
     # Validate columns
     columns = data.get("columns")
+    _VALID_NAMING_CATEGORIES = {"characters", "scenes", "props"}
     if isinstance(columns, list):
         seen_fields: set[str] = set()
+        has_structural = set()
         for idx, col in enumerate(columns):
             if not isinstance(col, dict):
                 errors.append(f"columns[{idx}] must be a dict")
@@ -195,6 +197,23 @@ def validate_template_json(data: dict[str, Any]) -> list[str]:
             if field_name in seen_fields:
                 errors.append(f"Duplicate column field name: '{field_name}'")
             seen_fields.add(field_name)
+            if field_name in _STRUCTURAL_COLUMN_FIELDS:
+                has_structural.add(field_name)
+            # Validate naming_field type
+            nf = col.get("naming_field")
+            if nf is not None and not isinstance(nf, bool):
+                errors.append(f"columns[{idx}] '{field_name}': naming_field must be a boolean")
+            # Validate naming_category enum
+            nc = col.get("naming_category")
+            if nc is not None and nc not in _VALID_NAMING_CATEGORIES:
+                errors.append(
+                    f"columns[{idx}] '{field_name}': naming_category must be one of "
+                    f"{', '.join(sorted(_VALID_NAMING_CATEGORIES))}, got '{nc}'"
+                )
+            # Validate width type
+            w = col.get("width")
+            if w is not None and not isinstance(w, int):
+                errors.append(f"columns[{idx}] '{field_name}': width must be an integer")
     elif columns is not None:
         errors.append("'columns' must be a list")
 
@@ -2611,8 +2630,20 @@ def cmd_draft_from_analysis(args: argparse.Namespace) -> int:
     }
     write_json(fill_in_path, fill_data)
 
-    print(str(output_path))
-    print(f"JSON fill-in file: {fill_in_path}")
+    summary = {
+        "status": "ok",
+        "stage": "draft-from-analysis",
+        "template": template,
+        "output_markdown": str(output_path),
+        "output_fill_json": str(fill_in_path),
+        "block_count": len(blocks),
+        "fill_status": fill_status,
+    }
+    if hasattr(args, "output_format") and args.output_format == "json":
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+    else:
+        print(str(output_path))
+        print(f"JSON fill-in file: {fill_in_path}")
     return 0
 
 
@@ -2869,19 +2900,31 @@ def cmd_build_xlsx(args: argparse.Namespace) -> int:
     delivery = evaluate_delivery_readiness(
         rows, template, base_dir=base_dir, check_files=True,
     )
-    print("--- delivery summary ---")
-    print(f"  rows exported: {delivery['row_count']}")
-    if not rows:
-        print("  WARNING: no rows exported — cue sheet is empty")
-    if keyframe_col_index is not None:
-        print(f"  embedded keyframes: {embedded_keyframes}/{len(rows)}")
-        if delivery["missing_keyframes"]:
-            print(f"  WARNING: missing keyframes for blocks: {', '.join(delivery['missing_keyframes'])}")
-    if delivery["empty_required_fields"] > 0:
-        print(f"  WARNING: {delivery['empty_required_fields']} empty required field(s) across all rows")
-    if delivery["empty_recommended_fields"] > 0:
-        print(f"  WARNING: {delivery['empty_recommended_fields']} empty recommended field(s) across all rows")
-    print(f"  delivery_ready: {'YES' if delivery['delivery_ready'] else 'NO — review warnings above'}")
+    summary = {
+        "status": "ok",
+        "stage": "build-xlsx",
+        "output": str(output_path),
+        "template": template,
+        "embedded_keyframes": embedded_keyframes,
+        **delivery,
+    }
+    if hasattr(args, "output_format") and args.output_format == "json":
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+    else:
+        print(str(output_path))
+        print("--- delivery summary ---")
+        print(f"  rows exported: {delivery['row_count']}")
+        if not rows:
+            print("  WARNING: no rows exported — cue sheet is empty")
+        if keyframe_col_index is not None:
+            print(f"  embedded keyframes: {embedded_keyframes}/{len(rows)}")
+            if delivery["missing_keyframes"]:
+                print(f"  WARNING: missing keyframes for blocks: {', '.join(delivery['missing_keyframes'])}")
+        if delivery["empty_required_fields"] > 0:
+            print(f"  WARNING: {delivery['empty_required_fields']} empty required field(s) across all rows")
+        if delivery["empty_recommended_fields"] > 0:
+            print(f"  WARNING: {delivery['empty_recommended_fields']} empty recommended field(s) across all rows")
+        print(f"  delivery_ready: {'YES' if delivery['delivery_ready'] else 'NO'}")
     return 0
 
 
@@ -3122,8 +3165,11 @@ def cmd_apply_naming(args: argparse.Namespace) -> int:
     if args.report_out:
         write_json(Path(args.report_out), report)
 
-    mode = "[dry-run] " if dry_run else ""
-    print(f"{mode}Total {len(all_mappings)} mappings, {replaced_count} file(s) {'would be ' if dry_run else ''}updated.")
+    if hasattr(args, "output_format") and args.output_format == "json":
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        mode = "[dry-run] " if dry_run else ""
+        print(f"{mode}Total {len(all_mappings)} mappings, {replaced_count} file(s) {'would be ' if dry_run else ''}updated.")
     return 0
 
 
@@ -3378,11 +3424,14 @@ def cmd_derive_naming_tables(args: argparse.Namespace) -> int:
             print(f"Updated: {md_path}")
 
     # Summary
-    for cat in ("characters", "scenes", "props"):
-        count = len(tables.get(cat, []))
-        if count:
-            items = ", ".join(e["temporary_name"] for e in tables[cat])
-            print(f"  {cat}: {count} ({items})")
+    if hasattr(args, "output_format") and args.output_format == "json":
+        print(json.dumps(output_data, ensure_ascii=False, indent=2))
+    else:
+        for cat in ("characters", "scenes", "props"):
+            count = len(tables.get(cat, []))
+            if count:
+                items = ", ".join(e["temporary_name"] for e in tables[cat])
+                print(f"  {cat}: {count} ({items})")
 
     return 0
 
@@ -3603,28 +3652,31 @@ def cmd_normalize_fill(args: argparse.Namespace) -> int:
         write_json(Path(args.report_out), report)
 
     # Print summary
-    mode_label = "fix" if fix_mode else "lint"
-    print(f"=== normalize-fill ({mode_label}, {template}) ===")
-    print(f"Rows: {len(rows)}")
-    if fixes_applied:
-        print(f"Fixes applied: {len(fixes_applied)}")
-        for f in fixes_applied[:10]:
-            print(f"  {f['block']}.{f['field']}: '{f['old']}' -> '{f['new']}'")
-        if len(fixes_applied) > 10:
-            print(f"  ... and {len(fixes_applied) - 10} more")
-    if issues:
-        fixable = [i for i in issues if i.get("severity") == "fixable"]
-        warnings = [i for i in issues if i.get("severity") == "warning"]
-        if fixable:
-            print(f"Fixable issues: {len(fixable)} (run with --fix to auto-normalize)")
-            for i in fixable[:5]:
-                print(f"  {i['block']}.{i['field']}: '{i.get('old', '')}' -> '{i.get('new', '')}'")
-        if warnings:
-            print(f"Warnings: {len(warnings)}")
-            for i in warnings[:10]:
-                print(f"  {i['block']}.{i['field']}: {i.get('message', i.get('type', ''))}")
-    if not issues and not fixes_applied:
-        print("  No issues found.")
+    if hasattr(args, "output_format") and args.output_format == "json":
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        mode_label = "fix" if fix_mode else "lint"
+        print(f"=== normalize-fill ({mode_label}, {template}) ===")
+        print(f"Rows: {len(rows)}")
+        if fixes_applied:
+            print(f"Fixes applied: {len(fixes_applied)}")
+            for f in fixes_applied[:10]:
+                print(f"  {f['block']}.{f['field']}: '{f['old']}' -> '{f['new']}'")
+            if len(fixes_applied) > 10:
+                print(f"  ... and {len(fixes_applied) - 10} more")
+        if issues:
+            fixable = [i for i in issues if i.get("severity") == "fixable"]
+            warnings = [i for i in issues if i.get("severity") == "warning"]
+            if fixable:
+                print(f"Fixable issues: {len(fixable)} (run with --fix to auto-normalize)")
+                for i in fixable[:5]:
+                    print(f"  {i['block']}.{i['field']}: '{i.get('old', '')}' -> '{i.get('new', '')}'")
+            if warnings:
+                print(f"Warnings: {len(warnings)}")
+                for i in warnings[:10]:
+                    print(f"  {i['block']}.{i['field']}: {i.get('message', i.get('type', ''))}")
+        if not issues and not fixes_applied:
+            print("  No issues found.")
 
     return 0
 
@@ -3786,7 +3838,19 @@ def cmd_merge_blocks(args: argparse.Namespace) -> int:
         for w in warnings:
             print(f"  ⚠ {w}", file=sys.stderr)
 
-    print(str(output_path))
+    summary = {
+        "status": "ok",
+        "stage": "merge-blocks",
+        "output": str(output_path),
+        "original_block_count": len(draft_blocks),
+        "merged_block_count": len(merged_blocks),
+        "unreferenced_blocks": sorted(unreferenced),
+        "warnings": warnings,
+    }
+    if hasattr(args, "output_format") and args.output_format == "json":
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+    else:
+        print(str(output_path))
     return 0
 
 
@@ -3863,23 +3927,33 @@ def cmd_export_md(args: argparse.Namespace) -> int:
         lines.append("")
 
     output_path.write_text("\n".join(lines), encoding="utf-8")
-    print(str(output_path))
 
     # --- Delivery completeness summary (unified — same as build-xlsx) ---
     delivery = evaluate_delivery_readiness(
         rows, template, base_dir=base_dir, check_files=True,
     )
-    print("--- delivery summary ---")
-    print(f"  rows exported: {delivery['row_count']}")
-    if not rows:
-        print("  WARNING: no rows exported — cue sheet is empty")
-    if delivery["missing_keyframes"]:
-        print(f"  WARNING: missing keyframes for blocks: {', '.join(delivery['missing_keyframes'])}")
-    if delivery["empty_required_fields"] > 0:
-        print(f"  WARNING: {delivery['empty_required_fields']} empty required field(s) across all rows")
-    if delivery["temp_name_gaps"]:
-        print(f"  WARNING: {len(delivery['temp_name_gaps'])} unconfirmed temp name(s)")
-    print(f"  delivery_ready: {'YES' if delivery['delivery_ready'] else 'NO'}")
+    summary = {
+        "status": "ok",
+        "stage": "export-md",
+        "output": str(output_path),
+        "template": template,
+        **delivery,
+    }
+    if hasattr(args, "output_format") and args.output_format == "json":
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+    else:
+        print(str(output_path))
+        print("--- delivery summary ---")
+        print(f"  rows exported: {delivery['row_count']}")
+        if not rows:
+            print("  WARNING: no rows exported — cue sheet is empty")
+        if delivery["missing_keyframes"]:
+            print(f"  WARNING: missing keyframes for blocks: {', '.join(delivery['missing_keyframes'])}")
+        if delivery["empty_required_fields"] > 0:
+            print(f"  WARNING: {delivery['empty_required_fields']} empty required field(s) across all rows")
+        if delivery["temp_name_gaps"]:
+            print(f"  WARNING: {len(delivery['temp_name_gaps'])} unconfirmed temp name(s)")
+        print(f"  delivery_ready: {'YES' if delivery['delivery_ready'] else 'NO'}")
     return 0
 
 
@@ -3975,7 +4049,18 @@ def cmd_build_final_skeleton(args: argparse.Namespace) -> int:
 
     output_path = Path(args.output)
     write_json(output_path, skeleton)
-    print(str(output_path))
+    summary = {
+        "status": "ok",
+        "stage": "build-final-skeleton",
+        "output": str(output_path),
+        "template": template,
+        "video_title": video_title,
+        "row_count": len(rows),
+    }
+    if hasattr(args, "output_format") and args.output_format == "json":
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+    else:
+        print(str(output_path))
     return 0
 
 
@@ -4239,14 +4324,26 @@ def cmd_suggest_merges(args: argparse.Namespace) -> int:
     # Print summary
     merged_count = sum(1 for g in merge_groups if len(g["source_blocks"]) > 1)
     kept_count = sum(1 for g in merge_groups if len(g["source_blocks"]) == 1)
-    print(f"Suggested merge plan: {merged_count} merge group(s), {kept_count} kept separate.")
-    print(f"Output: {output_path}")
-    if merged_count > 0:
-        print("Merge suggestions:")
-        for g in merge_groups:
-            if len(g["source_blocks"]) > 1:
-                print(f"  {' + '.join(g['source_blocks'])} → {g['new_id']} ({g['reason']})")
-    print("NOTE: LLM should review this plan for narrative-function boundaries before executing.")
+    summary = {
+        "status": "ok",
+        "stage": "suggest-merges",
+        "output": str(output_path),
+        "threshold": threshold,
+        "total_blocks": len(draft_blocks),
+        "suggested_merge_groups": merged_count,
+        "kept_separate": kept_count,
+    }
+    if hasattr(args, "output_format") and args.output_format == "json":
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+    else:
+        print(f"Suggested merge plan: {merged_count} merge group(s), {kept_count} kept separate.")
+        print(f"Output: {output_path}")
+        if merged_count > 0:
+            print("Merge suggestions:")
+            for g in merge_groups:
+                if len(g["source_blocks"]) > 1:
+                    print(f"  {' + '.join(g['source_blocks'])} -> {g['new_id']} ({g['reason']})")
+        print("NOTE: LLM should review this plan for narrative-function boundaries before executing.")
     return 0
 
 

@@ -28,6 +28,27 @@ jobs:
       - name: Run tests
         run: python tests/test_core.py
 
+  packaging:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package
+        run: pip install .
+
+      - name: Verify console entry point
+        run: cuesheet-creator --version
+
+      - name: Verify selfcheck JSON output
+        run: |
+          output=$(cuesheet-creator selfcheck --output-format json 2>/dev/null || true)
+          echo "$output" | python -c "import sys, json; json.load(sys.stdin); print('OK: selfcheck JSON parseable')"
+
   lint:
     runs-on: ubuntu-latest
     steps:

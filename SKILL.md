@@ -668,7 +668,7 @@ Ask the user one question at a time. Infer when possible — if the user gives a
 
 Generate a template JSON and save via:
 ```bash
-python scripts/cuesheet_creator.py save-template --input <template.json> --validate
+python scripts/cuesheet_creator.py save-template --input <template.json>
 ```
 
 `save-template` validates:
