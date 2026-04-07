@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "cuesheet-creator"
+version = "1.4.0"
+description = "Turn a single video into a collaborative cue sheet with keyframe screenshots and Excel/Markdown deliverables."
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.10"
+authors = [{name = "jing1ei", email = "hi@lei.best"}]
+
+dependencies = [
+    "opencv-python-headless>=4.8,<5",
+    "numpy>=1.24",
+    "Pillow>=10.0,<12",
+    "openpyxl>=3.1,<4",
+]
+
+[project.optional-dependencies]
+scene = ["scenedetect[opencv]>=0.6,<1"]
+asr = ["faster-whisper>=1.0,<2"]
+ocr = ["rapidocr-onnxruntime>=1.3,<2"]
+ocr-extra = [
+    "easyocr>=1.7,<2",
+    "paddleocr>=2.7,<3",
+]
+all = [
+    "scenedetect[opencv]>=0.6,<1",
+    "faster-whisper>=1.0,<2",
+    "rapidocr-onnxruntime>=1.3,<2",
+]
+dev = [
+    "pytest>=7.0",
+    "ruff>=0.4",
+]
+
+[project.scripts]
+cuesheet-creator = "scripts.cuesheet_creator:main"
+
+[project.urls]
+Homepage = "https://github.com/jing1ei/cuesheet-creator"
+Issues = "https://github.com/jing1ei/cuesheet-creator/issues"
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

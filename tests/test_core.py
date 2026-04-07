@@ -1292,7 +1292,8 @@ def test_normalize_fill_fix_mode():
 def test_list_templates_returns_builtin():
     """list-templates should include the 3 built-in templates."""
     import argparse
-    import io, contextlib
+    import io
+    import contextlib
 
     args = argparse.Namespace(output_format="json")
     captured = io.StringIO()
@@ -1313,7 +1314,8 @@ def test_list_templates_returns_builtin():
 def test_show_template_production():
     """show-template should return full details for production template."""
     import argparse
-    import io, contextlib
+    import io
+    import contextlib
 
     args = argparse.Namespace(name="production", output_format="json")
     captured = io.StringIO()
@@ -1332,7 +1334,8 @@ def test_show_template_production():
 def test_show_template_not_found():
     """show-template for a nonexistent template should fail."""
     import argparse
-    import io, contextlib
+    import io
+    import contextlib
 
     args = argparse.Namespace(name="nonexistent-template", output_format="text")
     captured_err = io.StringIO()
@@ -1386,7 +1389,8 @@ def test_save_and_delete_custom_template():
 def test_delete_builtin_template_refused():
     """delete-template should refuse to delete built-in templates."""
     import argparse
-    import io, contextlib
+    import io
+    import contextlib
 
     args = argparse.Namespace(name="production")
     captured_err = io.StringIO()

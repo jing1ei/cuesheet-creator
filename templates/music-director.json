@@ -1,5 +1,6 @@
 {
   "name": "music-director",
+  "schema_version": 2,
   "description": "For composer / scoring communication",
 
   "perspective": "Judge mood and rhythmic function first. Specify music entry, change, and exit points. Instrumentation suggestions should be concrete (e.g. 'pizzicato bass + granular electronic pulse', not 'add some tension').",

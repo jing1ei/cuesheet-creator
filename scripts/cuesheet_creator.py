@@ -2,7 +2,7 @@
 """cuesheet-creator — turn a single video into a collaborative cue sheet."""
 from __future__ import annotations
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 
 import argparse
 import copy
@@ -132,11 +132,26 @@ _TEMPLATE_REQUIRED_SEGMENTATION_FIELDS = {"strategy", "description", "split_trig
 _TEMPLATE_REQUIRED_COLUMN_FIELDS = {"field", "label"}
 # Structural columns that are always present
 _STRUCTURAL_COLUMN_FIELDS = {"shot_block", "start_time", "end_time"}
+# Current template schema version. Templates may include "schema_version" to declare
+# compatibility. Newer scripts can still load older templates (backward compat).
+TEMPLATE_SCHEMA_VERSION = 2
+_STRUCTURAL_COLUMN_FIELDS = {"shot_block", "start_time", "end_time"}
 
 
 def validate_template_json(data: dict[str, Any]) -> list[str]:
     """Validate a template JSON dict. Returns list of error strings (empty = valid)."""
     errors: list[str] = []
+
+    # Check schema version compatibility
+    sv = data.get("schema_version")
+    if sv is not None:
+        if not isinstance(sv, int):
+            errors.append(f"'schema_version' must be an integer, got {type(sv).__name__}")
+        elif sv > TEMPLATE_SCHEMA_VERSION:
+            errors.append(
+                f"Template schema_version {sv} is newer than this script supports "
+                f"(max {TEMPLATE_SCHEMA_VERSION}). Please upgrade cuesheet-creator."
+            )
 
     # Check required top-level fields
     for field in _TEMPLATE_REQUIRED_FIELDS:
@@ -1613,6 +1628,80 @@ def compute_visual_features(cv2: Any, np: Any, frame: Any) -> dict[str, Any]:
     }
 
 
+def estimate_motion_hint(
+    cv2: Any, np: Any, capture: Any,
+    block_start: float, block_end: float,
+    num_samples: int = 4,
+    static_threshold: float = 2.0,
+) -> dict[str, Any]:
+    """Estimate camera motion for a block using phase correlation on consecutive frames.
+
+    Samples num_samples evenly-spaced frames within the block and measures
+    global displacement between each consecutive pair. This is NOT optical flow
+    — it detects whole-frame translation only, which is enough to reliably
+    distinguish static shots from camera moves.
+
+    Returns: {
+        "motion_hint": "likely-static" | "likely-camera-move" | "uncertain",
+        "motion_confidence": float (0-1),
+        "avg_displacement": float (pixels),
+        "max_displacement": float (pixels),
+    }
+    """
+    duration = block_end - block_start
+    if duration < 0.2 or num_samples < 2:
+        return {"motion_hint": "uncertain", "motion_confidence": 0.0,
+                "avg_displacement": 0.0, "max_displacement": 0.0}
+
+    step = duration / (num_samples - 1) if num_samples > 1 else duration
+    times = [block_start + i * step for i in range(num_samples)]
+
+    frames_gray: list[Any] = []
+    for t in times:
+        capture.set(cv2.CAP_PROP_POS_MSEC, max(t, 0.0) * 1000.0)
+        ok, frame = capture.read()
+        if not ok or frame is None:
+            continue
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        # Downscale for speed
+        h, w = gray.shape[:2]
+        if w > 320:
+            scale = 320.0 / w
+            gray = cv2.resize(gray, (320, int(h * scale)))
+        frames_gray.append(np.float32(gray))
+
+    if len(frames_gray) < 2:
+        return {"motion_hint": "uncertain", "motion_confidence": 0.0,
+                "avg_displacement": 0.0, "max_displacement": 0.0}
+
+    displacements: list[float] = []
+    for i in range(len(frames_gray) - 1):
+        # Phase correlation gives (dx, dy) of global shift
+        (dx, dy), _response = cv2.phaseCorrelate(frames_gray[i], frames_gray[i + 1])
+        disp = math.sqrt(dx * dx + dy * dy)
+        displacements.append(disp)
+
+    avg_disp = sum(displacements) / len(displacements) if displacements else 0.0
+    max_disp = max(displacements) if displacements else 0.0
+
+    if avg_disp < static_threshold and max_disp < static_threshold * 2:
+        hint = "likely-static"
+        confidence = min(1.0, (static_threshold - avg_disp) / static_threshold)
+    elif avg_disp > static_threshold * 3:
+        hint = "likely-camera-move"
+        confidence = min(1.0, avg_disp / (static_threshold * 6))
+    else:
+        hint = "uncertain"
+        confidence = 0.3
+
+    return {
+        "motion_hint": hint,
+        "motion_confidence": round(confidence, 2),
+        "avg_displacement": round(avg_disp, 2),
+        "max_displacement": round(max_disp, 2),
+    }
+
+
 def score_keyframe_candidates(
     cv2: Any,
     frames: list[tuple[float, Any, str]],
@@ -1751,7 +1840,7 @@ def cmd_scan_video(args: argparse.Namespace) -> int:
                 "index": idx,
                 "seconds": round(seconds, 3),
                 "timecode": format_seconds(seconds),
-                "image_path": str(image_path),
+                "image_path": os.path.relpath(str(image_path), str(out_dir)).replace("\\", "/"),
                 "score_from_previous": score,
                 "sharpness": sharpness,
                 "visual_features": visual_features,
@@ -1767,7 +1856,7 @@ def cmd_scan_video(args: argparse.Namespace) -> int:
                             "index": len(scene_candidates) + 1,
                             "seconds": round(seconds, 3),
                             "timecode": format_seconds(seconds),
-                            "image_path": str(image_path),
+                            "image_path": os.path.relpath(str(image_path), str(out_dir)).replace("\\", "/"),
                             "score": score,
                             "reason": reason,
                             "visual_features": visual_features,
@@ -1815,6 +1904,22 @@ def cmd_scan_video(args: argparse.Namespace) -> int:
         print("ERROR: No draft blocks could be generated from this video. "
               "Check scene detection settings or try a different --sample-interval.", file=sys.stderr)
 
+    # --- Phase 2.1b: Motion pre-analysis ---
+    # Lightweight phase-correlation on 4 frames per block to detect static vs moving camera.
+    # Saves LLM from guessing motion on single keyframes.
+    if draft_blocks:
+        motion_capture = cv2.VideoCapture(str(video_path))
+        try:
+            if motion_capture.isOpened():
+                for block in draft_blocks:
+                    hint = estimate_motion_hint(
+                        cv2, np, motion_capture,
+                        block["start_seconds"], block["end_seconds"],
+                    )
+                    block["motion_hint"] = hint
+        finally:
+            motion_capture.release()
+
     # --- Phase 2.2: ASR ---
     asr_result: dict[str, Any] = {"status": "not-run", "segments": []}
     if args.asr:
@@ -1851,8 +1956,11 @@ def cmd_scan_video(args: argparse.Namespace) -> int:
         ocr_frame_paths = []
         for candidate in scene_candidates:
             ip = candidate.get("image_path")
-            if ip and Path(ip).exists():
-                ocr_frame_paths.append(ip)
+            if ip:
+                # image_path is relative to out_dir
+                abs_ip = (out_dir / ip).resolve()
+                if abs_ip.exists():
+                    ocr_frame_paths.append(str(abs_ip))
         if ocr_frame_paths:
             detections, ocr_err = run_ocr_on_frames(ocr_frame_paths)
             if ocr_err is not None:
@@ -1888,11 +1996,9 @@ def cmd_scan_video(args: argparse.Namespace) -> int:
         kf = block.get("keyframe")
         kf_rel = ""
         if kf:
-            try:
-                kf_rel = os.path.relpath(kf, str(out_dir)).replace("\\", "/")
-            except Exception:
-                kf_rel = str(Path(kf).name) if kf else ""
-            all_keyframe_paths.append(str(kf))
+            # keyframe path is already relative to out_dir (from build_draft_blocks)
+            kf_rel = kf.replace("\\", "/") if isinstance(kf, str) else ""
+            all_keyframe_paths.append(kf_rel)
         block_overview.append({
             "id": block["shot_block"],
             "start": block["start_time"],
@@ -1900,6 +2006,7 @@ def cmd_scan_video(args: argparse.Namespace) -> int:
             "keyframe": kf_rel,
             "cut_reason": block.get("cut_reason", ""),
             "visual_features": block.get("visual_features"),
+            "motion_hint": block.get("motion_hint"),
         })
 
     # Group keyframes into batches for efficient LLM viewing
@@ -2441,8 +2548,24 @@ def cmd_draft_from_analysis(args: argparse.Namespace) -> int:
 
             # --- Default: empty for LLM to fill ---
             else:
+                # Motion pre-fill from phase-correlation analysis
+                motion_data = block.get("motion_hint")
+                if col == "motion" and motion_data and isinstance(motion_data, dict):
+                    hint = motion_data.get("motion_hint", "uncertain")
+                    conf = motion_data.get("motion_confidence", 0)
+                    if hint == "likely-static" and conf >= 0.5:
+                        row[col] = "[motion-hint: likely-static] "
+                        has_prefill = True
+                    elif hint == "likely-camera-move":
+                        row[col] = "[motion-hint: likely-camera-move] "
+                        has_prefill = True
+                    elif hint == "uncertain":
+                        row[col] = "[motion-hint: uncertain] "
+                        has_prefill = True
+                    else:
+                        row[col] = ""
                 # Check OCR for any field that might benefit from on-screen text hints
-                if kf_raw and ocr_by_frame:
+                elif kf_raw and ocr_by_frame:
                     kf_name = Path(kf_raw).name if kf_raw else ""
                     ocr_texts = ocr_by_frame.get(str(kf_raw), []) or ocr_by_frame.get(kf_name, [])
                     if ocr_texts and col in ("director_note", "event"):
@@ -2515,14 +2638,17 @@ def scale_dimensions(width: int, height: int, max_width: int, max_height: int) -
 # Shared temp-marker coverage validation
 # ---------------------------------------------------------------------------
 
-def validate_temp_marker_coverage(row: dict[str, Any]) -> list[str]:
+def validate_temp_marker_coverage(row: dict[str, Any], template: str = "production") -> list[str]:
     """Check that every temp: marker in naming fields has a matching entry in needs_confirmation.
 
     Returns a list of gap descriptions (empty = all markers covered).
     This is the single source of truth for temp-name consistency checks,
     used by evaluate_delivery_readiness, validate-cue-json, and normalize-fill.
+
+    Naming fields are read from the template metadata (naming_field=true).
+    Falls back to (scene, characters, location) for templates without metadata.
     """
-    naming_fields = ("scene", "characters", "location")
+    naming_fields = _get_naming_fields_from_template(template)
     needs_conf = str(row.get("needs_confirmation", "")).strip().lower()
     label = row.get("shot_block", "?")
     gaps: list[str] = []
@@ -2598,7 +2724,7 @@ def evaluate_delivery_readiness(
                 empty_recommended += 1
 
         # temp: name consistency — per-marker coverage check
-        marker_gaps = validate_temp_marker_coverage(row)
+        marker_gaps = validate_temp_marker_coverage(row, template)
         temp_name_gaps.extend(marker_gaps)
         delivery_gaps.extend(marker_gaps)
 
@@ -2688,7 +2814,8 @@ def cmd_build_xlsx(args: argparse.Namespace) -> int:
                 with PILImage.open(keyframe_path) as img:
                     width, height = img.size
                     scaled_w, scaled_h = scale_dimensions(width, height, args.image_max_width, args.image_max_height)
-                    thumb = img.resize((scaled_w, scaled_h), PILImage.LANCZOS)
+                    _lanczos = getattr(PILImage, "Resampling", PILImage).LANCZOS
+                    thumb = img.resize((scaled_w, scaled_h), _lanczos)
                     thumb_path = keyframe_path.parent / f".thumb_{keyframe_path.name}"
                     thumb.save(str(thumb_path), "JPEG", quality=85)
                 xl_image = XLImage(str(thumb_path))
@@ -2824,7 +2951,7 @@ def cmd_validate_cue_json(args: argparse.Namespace) -> int:
             warnings.append(f"{label}: fields not defined in template '{template}': {', '.join(sorted(extra_keys))}.")
 
         # temp: marker coverage — use shared per-marker validation
-        marker_gaps = validate_temp_marker_coverage(row)
+        marker_gaps = validate_temp_marker_coverage(row, template)
         for gap_msg in marker_gaps:
             warnings.append(f"{gap_msg}.")
 
@@ -3067,16 +3194,28 @@ def derive_naming_tables_from_rows(
     # Determine which fields to scan for naming markers
     naming_fields = _get_naming_fields_from_template(template)
 
-    # Build a field -> category mapping from template or fallback
+    # Build a field -> category mapping from template metadata + fallback
     field_to_category: dict[str, str] = {}
+
+    # First: check template column metadata for naming_category
+    tmpl = _TEMPLATE_REGISTRY.get(template)
+    if tmpl and "columns" in tmpl:
+        for col in tmpl["columns"]:
+            if isinstance(col, dict) and col.get("naming_field") and "field" in col:
+                cat = col.get("naming_category", "")
+                if cat in ("characters", "scenes", "props"):
+                    field_to_category[col["field"]] = cat
+
+    # Second: fill in from hardcoded NAMING_CATEGORY_FIELDS for fields not yet mapped
     for category, fields in NAMING_CATEGORY_FIELDS.items():
         for f in fields:
-            if f in naming_fields:
+            if f in naming_fields and f not in field_to_category:
                 field_to_category[f] = category
-    # Any naming_field not in the fallback map goes to "scenes" (safe default)
+
+    # Third: any remaining naming_field without a category gets "props" (least harmful default)
     for f in naming_fields:
         if f not in field_to_category:
-            field_to_category[f] = "scenes"
+            field_to_category[f] = "props"
 
     # category -> { marker_text -> set of block IDs }
     category_map: dict[str, dict[str, set[str]]] = {
@@ -3274,6 +3413,7 @@ MOTION_ALIASES: dict[str, str] = {
 
 _VISUAL_HINT_RE = re.compile(r"\[visual:\s*[^\]]*\]\s*")
 _OCR_HINT_RE = re.compile(r"\[OCR detected:\s*[^\]]*\]\s*")
+_MOTION_HINT_RE = re.compile(r"\[motion-hint:\s*[^\]]*\]\s*")
 
 
 def normalize_shot_size(value: str) -> tuple[str, bool]:
@@ -3316,11 +3456,12 @@ def normalize_motion(value: str) -> tuple[str, bool]:
 
 
 def strip_hint_prefixes(value: str) -> tuple[str, bool]:
-    """Remove [visual: ...] and [OCR detected: ...] hint prefixes."""
+    """Remove [visual: ...], [OCR detected: ...], and [motion-hint: ...] hint prefixes."""
     if not value:
         return value, False
     cleaned = _VISUAL_HINT_RE.sub("", value)
     cleaned = _OCR_HINT_RE.sub("", cleaned)
+    cleaned = _MOTION_HINT_RE.sub("", cleaned)
     cleaned = cleaned.strip()
     return cleaned, cleaned != value.strip()
 
@@ -3406,7 +3547,7 @@ def cmd_normalize_fill(args: argparse.Namespace) -> int:
                     issues.append({**fix_rec, "severity": "fixable"})
 
         # 4. Check temp: markers vs needs_confirmation (shared logic)
-        marker_gaps = validate_temp_marker_coverage(row)
+        marker_gaps = validate_temp_marker_coverage(row, template)
         for gap_msg in marker_gaps:
             issues.append({
                 "block": block_id, "field": "needs_confirmation",
@@ -3724,9 +3865,21 @@ def cmd_export_md(args: argparse.Namespace) -> int:
     output_path.write_text("\n".join(lines), encoding="utf-8")
     print(str(output_path))
 
-    # --- Delivery completeness summary ---
-    if missing_keyframes_md:
-        print(f"WARNING: keyframe files not found for blocks: {', '.join(missing_keyframes_md)}", file=sys.stderr)
+    # --- Delivery completeness summary (unified — same as build-xlsx) ---
+    delivery = evaluate_delivery_readiness(
+        rows, template, base_dir=base_dir, check_files=True,
+    )
+    print("--- delivery summary ---")
+    print(f"  rows exported: {delivery['row_count']}")
+    if not rows:
+        print("  WARNING: no rows exported — cue sheet is empty")
+    if delivery["missing_keyframes"]:
+        print(f"  WARNING: missing keyframes for blocks: {', '.join(delivery['missing_keyframes'])}")
+    if delivery["empty_required_fields"] > 0:
+        print(f"  WARNING: {delivery['empty_required_fields']} empty required field(s) across all rows")
+    if delivery["temp_name_gaps"]:
+        print(f"  WARNING: {len(delivery['temp_name_gaps'])} unconfirmed temp name(s)")
+    print(f"  delivery_ready: {'YES' if delivery['delivery_ready'] else 'NO'}")
     return 0
 
 
@@ -4143,7 +4296,7 @@ def cmd_show_template(args: argparse.Namespace) -> int:
         print(f"  Perspective: {tmpl.get('perspective', '(none)')}")
         seg = tmpl.get("segmentation", {})
         if seg:
-            print(f"\n  Segmentation:")
+            print("\n  Segmentation:")
             print(f"    Strategy: {seg.get('strategy', '')}")
             print(f"    Description: {seg.get('description', '')}")
             triggers = seg.get("split_triggers", [])
@@ -4179,7 +4332,7 @@ def cmd_show_template(args: argparse.Namespace) -> int:
                 print(f"    - {col.get('field', ''):24s} \"{col.get('label', '')}\" width={col.get('width', 18)}{flag_str}")
         guidance = tmpl.get("fill_guidance", [])
         if guidance:
-            print(f"\n  Fill guidance:")
+            print("\n  Fill guidance:")
             for g in guidance:
                 print(f"    - {g}")
     return 0
@@ -4357,6 +4510,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="production",
         help="Template name (default: production). Use list-templates to see available templates.",
     )
+    draft.add_argument("--output-format", choices=["text", "json"], default="text")
     draft.set_defaults(func=cmd_draft_from_analysis)
 
     build = subparsers.add_parser("build-xlsx", help="Export Excel from final_cues.json")
@@ -4369,6 +4523,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     build.add_argument("--image-max-width", type=int, default=180)
     build.add_argument("--image-max-height", type=int, default=100)
+    build.add_argument("--output-format", choices=["text", "json"], default="text")
     build.set_defaults(func=cmd_build_xlsx)
 
     validate = subparsers.add_parser("validate-cue-json", help="Validate final_cues.json structural integrity")
@@ -4390,12 +4545,14 @@ def build_parser() -> argparse.ArgumentParser:
     apply_naming.add_argument("--output", type=resolved_path, help="Write updated JSON to this path instead of overwriting original")
     apply_naming.add_argument("--dry-run", action="store_true", help="Preview changes without writing files")
     apply_naming.add_argument("--report-out", type=resolved_path, help="Write replacement report JSON")
+    apply_naming.add_argument("--output-format", choices=["text", "json"], default="text")
     apply_naming.set_defaults(func=cmd_apply_naming)
 
     derive_naming = subparsers.add_parser("derive-naming-tables", help="Scan filled draft_fill.json for temp: markers and generate naming confirmation tables")
     derive_naming.add_argument("--source-json", type=resolved_path, required=True, help="Filled draft_fill.json (or any JSON with rows containing temp: markers)")
     derive_naming.add_argument("--output", type=resolved_path, required=True, help="Output naming_tables.json path")
     derive_naming.add_argument("--md", type=resolved_path, help="cue_sheet.md to update with derived naming tables (optional)")
+    derive_naming.add_argument("--output-format", choices=["text", "json"], default="text")
     derive_naming.set_defaults(func=cmd_derive_naming_tables)
 
     normalize = subparsers.add_parser("normalize-fill", help="Normalize/lint LLM-filled JSON: standardize enums, strip hint prefixes, check temp markers")
@@ -4403,6 +4560,7 @@ def build_parser() -> argparse.ArgumentParser:
     normalize.add_argument("--fix", action="store_true", help="Auto-normalize and write output (default: lint-only, report issues)")
     normalize.add_argument("--output", type=resolved_path, help="Output path for fixed JSON (default: overwrite source)")
     normalize.add_argument("--report-out", type=resolved_path, help="Write normalize report JSON")
+    normalize.add_argument("--output-format", choices=["text", "json"], default="text")
     normalize.set_defaults(func=cmd_normalize_fill)
 
     merge = subparsers.add_parser("merge-blocks", help="Merge draft blocks based on a merge plan")
@@ -4410,6 +4568,7 @@ def build_parser() -> argparse.ArgumentParser:
     merge.add_argument("--merge-plan", type=resolved_path, required=True, help="Path to merge plan JSON")
     merge.add_argument("--output", type=resolved_path, required=True, help="Output merged blocks JSON")
     merge.add_argument("--strict", action="store_true", help="Fail on unreferenced blocks and time ordering issues")
+    merge.add_argument("--output-format", choices=["text", "json"], default="text")
     merge.set_defaults(func=cmd_merge_blocks)
 
     suggest = subparsers.add_parser("suggest-merges", help="Auto-suggest block merges based on visual continuity scoring")
@@ -4417,6 +4576,7 @@ def build_parser() -> argparse.ArgumentParser:
     suggest.add_argument("--output", type=resolved_path, required=True, help="Output suggested merge plan JSON")
     suggest.add_argument("--threshold", type=float, default=0.65, help="Continuity score threshold for merge suggestion (0.0-1.0, default 0.65)")
     suggest.add_argument("--template", default=None, help="Template name for strategy-aware weight adjustment (reads from analysis.json if not specified)")
+    suggest.add_argument("--output-format", choices=["text", "json"], default="text")
     suggest.set_defaults(func=cmd_suggest_merges)
 
     export_md = subparsers.add_parser("export-md", help="Generate Markdown final from final_cues.json")
@@ -4427,6 +4587,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--template",
         help="Override template in cue JSON. Use list-templates to see available templates.",
     )
+    export_md.add_argument("--output-format", choices=["text", "json"], default="text")
     export_md.set_defaults(func=cmd_export_md)
 
     skeleton = subparsers.add_parser("build-final-skeleton", help="Generate empty final_cues.json skeleton from merged/draft blocks")
@@ -4439,6 +4600,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     skeleton.add_argument("--video-title", default=None, help="Video title for the skeleton")
     skeleton.add_argument("--source-path", type=resolved_path, default=None, help="Video source path override (for merged input that lacks video metadata)")
+    skeleton.add_argument("--output-format", choices=["text", "json"], default="text")
     skeleton.set_defaults(func=cmd_build_final_skeleton)
 
     # --- Template management commands ---
@@ -4453,7 +4615,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     save_tmpl = subparsers.add_parser("save-template", help="Validate and save a template JSON to custom templates directory")
     save_tmpl.add_argument("--input", type=resolved_path, required=True, help="Path to template JSON file")
-    save_tmpl.add_argument("--validate", action="store_true", default=True, help="Validate template JSON (default: always on)")
     save_tmpl.add_argument("--overwrite", action="store_true", help="Overwrite existing template with same name")
     save_tmpl.set_defaults(func=cmd_save_template)
 

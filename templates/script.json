@@ -1,5 +1,6 @@
 {
   "name": "script",
+  "schema_version": 2,
   "description": "For story discussion and early-stage breakdown",
 
   "perspective": "State what happens first, then who is present and where. Do not over-load with camera technical info.",

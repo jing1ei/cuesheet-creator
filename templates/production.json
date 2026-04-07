@@ -1,5 +1,6 @@
 {
   "name": "production",
+  "schema_version": 2,
   "description": "For director, producer, art, cinematography, and sound cross-department collaboration",
 
   "perspective": "Prioritize what needs cross-department alignment in this segment. Clarify space, composition, relationships, execution risks. director_note covers camera language and production coordination points — no vague commentary.",
@@ -37,10 +38,10 @@
     {"field": "shot_size", "label": "Shot Size", "width": 12, "required": true, "recommended": true, "naming_field": false, "prefill_source": null},
     {"field": "angle_or_lens", "label": "Angle/Lens", "width": 20, "required": true, "recommended": false, "naming_field": false, "prefill_source": null},
     {"field": "motion", "label": "Motion", "width": 18, "required": true, "recommended": false, "naming_field": false, "prefill_source": null},
-    {"field": "scene", "label": "Scene", "width": 18, "required": true, "recommended": true, "naming_field": true, "prefill_source": null},
+    {"field": "scene", "label": "Scene", "width": 18, "required": true, "recommended": true, "naming_field": true, "naming_category": "scenes", "prefill_source": null},
     {"field": "mood", "label": "Mood", "width": 20, "required": true, "recommended": true, "naming_field": false, "prefill_source": "visual_mood"},
-    {"field": "location", "label": "Location", "width": 18, "required": true, "recommended": false, "naming_field": true, "prefill_source": null},
-    {"field": "characters", "label": "Characters", "width": 20, "required": true, "recommended": true, "naming_field": true, "prefill_source": null},
+    {"field": "location", "label": "Location", "width": 18, "required": true, "recommended": false, "naming_field": true, "naming_category": "scenes", "prefill_source": null},
+    {"field": "characters", "label": "Characters", "width": 20, "required": true, "recommended": true, "naming_field": true, "naming_category": "characters", "prefill_source": null},
     {"field": "event", "label": "Event", "width": 28, "required": true, "recommended": true, "naming_field": false, "prefill_source": null},
     {"field": "important_dialogue", "label": "Dialogue", "width": 30, "required": false, "recommended": false, "naming_field": false, "prefill_source": "asr"},
     {"field": "music_note", "label": "Music Note", "width": 28, "required": false, "recommended": false, "naming_field": false, "prefill_source": null},
