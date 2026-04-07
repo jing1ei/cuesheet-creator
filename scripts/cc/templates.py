@@ -151,6 +151,10 @@ def load_templates() -> None:
         for json_file in sorted(builtin_dir.glob("*.json")):
             try:
                 data = json.loads(json_file.read_text(encoding="utf-8"))
+                errors = validate_template_json(data)
+                if errors:
+                    print(f"WARNING: Skipping built-in template {json_file.name} — validation errors: {errors}", file=sys.stderr)
+                    continue
                 name = data.get("name", json_file.stem)
                 data["_source"] = "built-in"
                 data["_path"] = str(json_file)
@@ -165,6 +169,10 @@ def load_templates() -> None:
         for json_file in sorted(custom_dir.glob("*.json")):
             try:
                 data = json.loads(json_file.read_text(encoding="utf-8"))
+                errors = validate_template_json(data)
+                if errors:
+                    print(f"WARNING: Skipping custom template {json_file.name} — validation errors: {errors}", file=sys.stderr)
+                    continue
                 name = data.get("name", json_file.stem)
                 data["_source"] = "custom"
                 data["_path"] = str(json_file)

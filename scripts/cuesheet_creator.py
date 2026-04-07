@@ -247,6 +247,7 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("--image-max-width", type=int, default=180)
     build.add_argument("--image-max-height", type=int, default=100)
     build.add_argument("--output-format", choices=["text", "json"], default="text")
+    build.add_argument("--fail-on-delivery-gap", action="store_true", help="Return non-zero exit code if delivery_ready is NO (for CI/pipeline use)")
     build.set_defaults(func=cmd_build_xlsx)
 
     # --- validate-cue-json ---
@@ -312,6 +313,7 @@ def build_parser() -> argparse.ArgumentParser:
     export_md.add_argument("--base-dir", type=resolved_path, help="Base directory for resolving relative keyframe paths")
     export_md.add_argument("--template", help="Override template in cue JSON")
     export_md.add_argument("--output-format", choices=["text", "json"], default="text")
+    export_md.add_argument("--fail-on-delivery-gap", action="store_true", help="Return non-zero exit code if delivery_ready is NO (for CI/pipeline use)")
     export_md.set_defaults(func=cmd_export_md)
 
     # --- build-final-skeleton ---

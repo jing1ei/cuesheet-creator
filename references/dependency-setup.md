@@ -20,11 +20,13 @@ Give cuesheet-creator a clear, selectable, one-command environment preparation f
 - `install-scene`: Required packages + SceneDetect (enhanced cut detection)
 - `install-asr`: Required packages + ASR optional components
 - `install-ocr`: Required packages + OCR primary engine (rapidocr-onnxruntime)
-- `install-all`: Required packages + all optional components
+- `install-ocr-extra`: Required packages + OCR primary + alternative engines (easyocr, paddleocr)
+- `install-all`: Required packages + scene + asr + ocr (**aligned with `pip install .[all]`** — does NOT include ocr-extra)
+- `install-everything`: Required packages + every optional group including ocr-extra
 
-> **Note**: `install-ocr` installs only the primary OCR engine (rapidocr). Alternative engines (easyocr, paddleocr) can be installed manually if preferred. The runtime automatically uses whichever engine is available.
+> **Note**: `install-all` and `pip install .[all]` install the same set: scene detection, ASR, and the primary OCR engine (rapidocr). Alternative OCR engines (easyocr, paddleocr) are heavier dependencies — use `install-ocr-extra` or `install-everything` if you need them.
 
-> **Version management**: Core package versions come from `requirements.txt`. Optional component versions (scene/asr/ocr) are maintained in the script's `OPTIONAL_COMPONENTS` constant. For manual core install: `pip install -r requirements.txt`.
+> **`install-deps --include-optional`** accepts the same keywords: `none`, `scene`, `asr`, `ocr`, `ocr-extra`, `all`, `everything` (comma-separated). `all` = scene+asr+ocr; `everything` = all supported groups.
 
 ## Recommended entry: prepare-env
 
@@ -116,8 +118,8 @@ Install scope:
 - Required: `opencv-python-headless`, `numpy`, `Pillow`, `openpyxl`
 - Scene detection: `scenedetect[opencv]` (enhanced cut detection, replaces histogram fallback)
 - ASR: `faster-whisper`
-- OCR primary: `rapidocr-onnxruntime` (installed by `install-ocr`)
-- OCR alternatives: `easyocr`, `paddleocr` (install manually or via `install-all`)
+- OCR primary: `rapidocr-onnxruntime` (installed by `install-ocr` or `all`)
+- OCR alternatives: `easyocr`, `paddleocr` (installed by `install-ocr-extra` or `everything`)
 
 ## Mirror & network
 

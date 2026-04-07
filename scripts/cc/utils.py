@@ -193,12 +193,26 @@ def parse_fps(text: str | None) -> float | None:
 
 
 def relpath_for_markdown(target: str | None, md_path: Path) -> str:
+    """Compute a relative path from a Markdown file to a target resource.
+
+    If *target* is already a relative path (e.g. "keyframes/frame_0001.jpg"),
+    it is assumed to be relative to the **same directory** as the Markdown file
+    and is returned with normalized separators — no os.path.relpath() call that
+    would accidentally mix in the process CWD.
+
+    If *target* is absolute, it is properly converted to a relative path from
+    md_path.parent.
+    """
     if not target:
         return ""
-    try:
-        return os.path.relpath(target, md_path.parent).replace("\\", "/")
-    except Exception:
-        return target.replace("\\", "/")
+    target_path = Path(target)
+    if target_path.is_absolute():
+        try:
+            return os.path.relpath(str(target_path), str(md_path.parent)).replace("\\", "/")
+        except Exception:
+            return target.replace("\\", "/")
+    # Already relative — normalize separators only
+    return str(target_path).replace("\\", "/")
 
 
 

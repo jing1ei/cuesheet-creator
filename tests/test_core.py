@@ -1669,6 +1669,211 @@ def test_cc_modular_imports():
 
 
 # ---------------------------------------------------------------------------
+# 17. Regression: relative keyframe paths in Markdown and draft_fill.json
+# ---------------------------------------------------------------------------
+
+def test_draft_markdown_relative_keyframe_no_cwd_drift():
+    """When analysis.json has relative keyframe paths, the Markdown image link
+    should be the same relative path (not mangled by CWD)."""
+    import argparse
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        kf_dir = Path(tmpdir) / "keyframes"
+        kf_dir.mkdir()
+        kf1 = kf_dir / "frame_0001.jpg"
+        kf1.write_bytes(b"\xff\xd8\xff\xe0")
+
+        analysis = {
+            "video": {
+                "source_path": "/fake/video.mp4",
+                "duration_seconds": 5.0,
+                "duration_timecode": "00:00:05.000",
+                "resolution": {"width": 1920, "height": 1080},
+                "fps": 24.0,
+                "audio_tracks": 1,
+            },
+            "agent_summary": {"total_blocks": 1, "blocks": [], "keyframe_batches": [],
+                              "asr_status": "not-run", "asr_segments": [],
+                              "ocr_status": "not-run", "ocr_detections": [],
+                              "degradation_notes": []},
+            "analysis_config": {"detection_method": "histogram",
+                                "effective_range": {"is_clip": False}},
+            "draft_blocks": [{
+                "shot_block": "A1", "start_seconds": 0.0, "end_seconds": 5.0,
+                "start_time": "00:00:00.000", "end_time": "00:00:05.000",
+                "keyframe": "keyframes/frame_0001.jpg",  # RELATIVE — this is the key
+                "candidate_score": 1.0,
+            }],
+            "asr": {"status": "not-run", "segments": []},
+            "ocr": {"status": "not-run", "detections": []},
+            "notes": [],
+        }
+        analysis_path = Path(tmpdir) / "analysis.json"
+        analysis_path.write_text(json.dumps(analysis), encoding="utf-8")
+
+        md_out = Path(tmpdir) / "cue_sheet.md"
+        args = argparse.Namespace(
+            analysis_json=str(analysis_path),
+            output=str(md_out),
+            template="production",
+        )
+        result = cc.cmd_draft_from_analysis(args)
+        assert result == 0
+
+        md_content = md_out.read_text(encoding="utf-8")
+        # The Markdown link MUST be the original relative path, not a CWD-mangled one
+        assert "![kf](keyframes/frame_0001.jpg)" in md_content, (
+            f"Expected ![kf](keyframes/frame_0001.jpg) in Markdown, got:\n"
+            + "\n".join(line for line in md_content.split("\n") if "kf" in line.lower())
+        )
+        # Must NOT contain ".." path segments (would indicate CWD drift)
+        for line in md_content.split("\n"):
+            if "![kf]" in line:
+                assert "../" not in line, (
+                    f"Markdown keyframe link should not drift via CWD: {line}"
+                )
+
+
+def test_draft_fill_json_relative_keyframe_preserved():
+    """draft_fill.json should preserve relative keyframe paths as-is."""
+    import argparse
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        kf_dir = Path(tmpdir) / "keyframes"
+        kf_dir.mkdir()
+        kf1 = kf_dir / "frame_0001.jpg"
+        kf1.write_bytes(b"\xff\xd8\xff\xe0")
+
+        analysis = {
+            "video": {"source_path": "/fake/video.mp4", "duration_seconds": 5.0,
+                      "duration_timecode": "00:00:05.000",
+                      "resolution": {"width": 1920, "height": 1080},
+                      "fps": 24.0, "audio_tracks": 1},
+            "agent_summary": {"total_blocks": 1, "blocks": [], "keyframe_batches": [],
+                              "asr_status": "not-run", "asr_segments": [],
+                              "ocr_status": "not-run", "ocr_detections": [],
+                              "degradation_notes": []},
+            "analysis_config": {"detection_method": "histogram",
+                                "effective_range": {"is_clip": False}},
+            "draft_blocks": [{
+                "shot_block": "A1", "start_seconds": 0.0, "end_seconds": 5.0,
+                "start_time": "00:00:00.000", "end_time": "00:00:05.000",
+                "keyframe": "keyframes/frame_0001.jpg",
+                "candidate_score": 1.0,
+            }],
+            "asr": {"status": "not-run", "segments": []},
+            "ocr": {"status": "not-run", "detections": []},
+            "notes": [],
+        }
+        analysis_path = Path(tmpdir) / "analysis.json"
+        analysis_path.write_text(json.dumps(analysis), encoding="utf-8")
+
+        md_out = Path(tmpdir) / "cue_sheet.md"
+        args = argparse.Namespace(
+            analysis_json=str(analysis_path),
+            output=str(md_out),
+            template="production",
+        )
+        cc.cmd_draft_from_analysis(args)
+
+        fill_path = Path(tmpdir) / "draft_fill.json"
+        fill = json.loads(fill_path.read_text(encoding="utf-8"))
+        kf_value = fill["rows"][0]["keyframe"]
+        assert kf_value == "keyframes/frame_0001.jpg", (
+            f"draft_fill.json keyframe should be 'keyframes/frame_0001.jpg', got '{kf_value}'"
+        )
+        assert "../" not in kf_value, f"keyframe path should not drift: {kf_value}"
+
+
+# ---------------------------------------------------------------------------
+# 18. Regression: install-all semantic parity
+# ---------------------------------------------------------------------------
+
+def test_install_all_semantics_consistent():
+    """install-deps 'all' and prepare-env 'install-all' must resolve to the same groups."""
+    from cc.constants import PREPARE_ENV_MODES
+    from cc.env import normalize_optional_groups
+
+    install_deps_all = normalize_optional_groups("all")
+    prepare_env_all = PREPARE_ENV_MODES["install-all"]
+
+    assert install_deps_all == prepare_env_all, (
+        f"install-deps 'all' resolved to {sorted(install_deps_all)} "
+        f"but prepare-env 'install-all' is {sorted(prepare_env_all)}"
+    )
+    # Neither should include ocr-extra
+    assert "ocr-extra" not in install_deps_all, "all should not include ocr-extra"
+    assert "ocr-extra" not in prepare_env_all, "install-all should not include ocr-extra"
+
+
+def test_install_everything_includes_ocr_extra():
+    """install-deps 'everything' should include all groups including ocr-extra."""
+    from cc.constants import PREPARE_ENV_MODES, SUPPORTED_OPTIONAL_GROUPS
+    from cc.env import normalize_optional_groups
+
+    deps_everything = normalize_optional_groups("everything")
+    env_everything = PREPARE_ENV_MODES["install-everything"]
+
+    assert deps_everything == SUPPORTED_OPTIONAL_GROUPS
+    assert env_everything == SUPPORTED_OPTIONAL_GROUPS
+    assert "ocr-extra" in deps_everything
+
+
+# ---------------------------------------------------------------------------
+# 19. Regression: export --fail-on-delivery-gap exit code
+# ---------------------------------------------------------------------------
+
+def test_export_md_fail_on_delivery_gap():
+    """export-md with --fail-on-delivery-gap should return 1 when delivery_ready is NO."""
+    import argparse
+    import contextlib
+    import io
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cue = {
+            "template": "production",
+            "video_title": "test",
+            "rows": [{
+                "shot_block": "A1",
+                "start_time": "00:00:00.000",
+                "end_time": "00:00:05.000",
+                "keyframe": "",
+                "shot_size": "",  # empty required field → delivery_ready: NO
+                "angle_or_lens": "", "motion": "",
+                "scene": "temp: X",
+                "mood": "", "location": "", "characters": "temp: Y",
+                "event": "", "important_dialogue": "",
+                "music_note": "", "director_note": "",
+                "confidence": "", "needs_confirmation": "",
+            }],
+        }
+        cue_path = Path(tmpdir) / "cue.json"
+        cue_path.write_text(json.dumps(cue), encoding="utf-8")
+        out_path = Path(tmpdir) / "cue.md"
+
+        # Without flag: should return 0 even if not delivery-ready
+        args_no_flag = argparse.Namespace(
+            cue_json=str(cue_path), output=str(out_path),
+            template=None, base_dir=tmpdir, output_format="text",
+        )
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            result_no_flag = cc.cmd_export_md(args_no_flag)
+        assert result_no_flag == 0, "Without flag, should return 0"
+
+        # With flag: should return 1
+        args_with_flag = argparse.Namespace(
+            cue_json=str(cue_path), output=str(out_path),
+            template=None, base_dir=tmpdir, output_format="text",
+            fail_on_delivery_gap=True,
+        )
+        captured2 = io.StringIO()
+        with contextlib.redirect_stdout(captured2):
+            result_with_flag = cc.cmd_export_md(args_with_flag)
+        assert result_with_flag == 1, "With --fail-on-delivery-gap, should return 1"
+
+
+# ---------------------------------------------------------------------------
 # Runner (standalone, no pytest required)
 # ---------------------------------------------------------------------------
 

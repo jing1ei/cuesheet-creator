@@ -156,15 +156,20 @@ def normalize_optional_groups(value: str | None) -> set[str]:
     raw = value.strip().lower()
     if raw in {"", "none"}:
         return set()
+    # "all" = scene + asr + ocr (aligned with pyproject.toml [all] and prepare-env install-all)
+    # "everything" = all supported groups including ocr-extra
+    _ALL_GROUPS = {"asr", "ocr", "scene"}
     groups: set[str] = set()
     for part in raw.split(","):
         item = part.strip()
         if not item or item == "none":
             continue
         if item == "all":
+            return set(_ALL_GROUPS)
+        if item == "everything":
             return set(SUPPORTED_OPTIONAL_GROUPS)
         if item not in SUPPORTED_OPTIONAL_GROUPS:
-            valid = ", ".join(sorted(SUPPORTED_OPTIONAL_GROUPS | {"all", "none"}))
+            valid = ", ".join(sorted(SUPPORTED_OPTIONAL_GROUPS | {"all", "everything", "none"}))
             raise ValueError(f"Unknown optional group: {item}, valid values: {valid}")
         groups.add(item)
     return groups

@@ -108,6 +108,10 @@ def cmd_export_md(args: "argparse.Namespace") -> int:  # noqa: F821
         if delivery["temp_name_gaps"]:
             print(f"  WARNING: {len(delivery['temp_name_gaps'])} unconfirmed temp name(s)")
         print(f"  delivery_ready: {'YES' if delivery['delivery_ready'] else 'NO'}")
+
+    fail_on_gap = hasattr(args, "fail_on_delivery_gap") and args.fail_on_delivery_gap
+    if fail_on_gap and not delivery["delivery_ready"]:
+        return 1
     return 0
 
 
