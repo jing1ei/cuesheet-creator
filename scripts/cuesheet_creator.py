@@ -214,6 +214,10 @@ def validate_template_json(data: dict[str, Any]) -> list[str]:
             w = col.get("width")
             if w is not None and not isinstance(w, int):
                 errors.append(f"columns[{idx}] '{field_name}': width must be an integer")
+        # Check that structural columns are present
+        for sc in _STRUCTURAL_COLUMN_FIELDS:
+            if sc not in has_structural:
+                errors.append(f"Missing required structural column: '{sc}'. Templates must include shot_block, start_time, end_time.")
     elif columns is not None:
         errors.append("'columns' must be a list")
 
@@ -2894,8 +2898,6 @@ def cmd_build_xlsx(args: argparse.Namespace) -> int:
                         except OSError:
                             pass
 
-    print(str(output_path))
-
     # --- Delivery completeness summary (unified) ---
     delivery = evaluate_delivery_readiness(
         rows, template, base_dir=base_dir, check_files=True,
@@ -3114,6 +3116,7 @@ def cmd_apply_naming(args: argparse.Namespace) -> int:
         return 1
 
     dry_run = bool(args.dry_run)
+    is_json = hasattr(args, "output_format") and args.output_format == "json"
     replaced_count = 0
     changes_detail: list[dict[str, Any]] = []
 
@@ -3128,12 +3131,15 @@ def cmd_apply_naming(args: argparse.Namespace) -> int:
             if not dry_run:
                 out_path = Path(args.output) if args.output else cue_path
                 write_json(out_path, new_payload)
-                print(f"Updated ({change_count} field changes): {out_path}")
+                if not is_json:
+                    print(f"Updated ({change_count} field changes): {out_path}")
             else:
-                print(f"[dry-run] Would update {change_count} fields in: {cue_path}")
+                if not is_json:
+                    print(f"[dry-run] Would update {change_count} fields in: {cue_path}")
             replaced_count += 1
         else:
-            print(f"No changes: {cue_path}")
+            if not is_json:
+                print(f"No changes: {cue_path}")
 
     if args.md:
         md_path = Path(args.md)
@@ -3146,9 +3152,11 @@ def cmd_apply_naming(args: argparse.Namespace) -> int:
         if md_changes:
             if not dry_run:
                 md_path.write_text(new_raw, encoding="utf-8")
-                print(f"Updated: {md_path}")
+                if not is_json:
+                    print(f"Updated: {md_path}")
             else:
-                print(f"[dry-run] Would update: {md_path}")
+                if not is_json:
+                    print(f"[dry-run] Would update: {md_path}")
             replaced_count += 1
         else:
             print(f"No changes: {md_path}")
@@ -3392,7 +3400,9 @@ def cmd_derive_naming_tables(args: argparse.Namespace) -> int:
         "tables": tables,
     }
     write_json(output_path, output_data)
-    print(f"Naming tables: {output_path} ({total} temp marker(s) found)")
+    is_json = hasattr(args, "output_format") and args.output_format == "json"
+    if not is_json:
+        print(f"Naming tables: {output_path} ({total} temp marker(s) found)")
 
     # Optionally update cue_sheet.md
     if args.md:
@@ -3421,7 +3431,8 @@ def cmd_derive_naming_tables(args: argparse.Namespace) -> int:
                     md_content = md_content.rstrip() + "\n\n" + new_tables_md
 
             md_path.write_text(md_content, encoding="utf-8")
-            print(f"Updated: {md_path}")
+            if not is_json:
+                print(f"Updated: {md_path}")
 
     # Summary
     if hasattr(args, "output_format") and args.output_format == "json":
@@ -3643,16 +3654,18 @@ def cmd_normalize_fill(args: argparse.Namespace) -> int:
     }
 
     # Write output
+    is_json = hasattr(args, "output_format") and args.output_format == "json"
     if fix_mode:
         out_path = Path(args.output) if args.output else source_path
         write_json(out_path, source)
-        print(f"Fixed: {out_path} ({len(fixes_applied)} fix(es) applied)")
+        if not is_json:
+            print(f"Fixed: {out_path} ({len(fixes_applied)} fix(es) applied)")
 
     if args.report_out:
         write_json(Path(args.report_out), report)
 
     # Print summary
-    if hasattr(args, "output_format") and args.output_format == "json":
+    if is_json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     else:
         mode_label = "fix" if fix_mode else "lint"

@@ -859,7 +859,7 @@ Detailed checklist in `references/review-checklist.md`. Core checks:
 | `apply-naming` | Batch-apply naming overrides (field-scoped JSON, full-text MD). Supports `--dry-run` / `--output`. |
 | `derive-naming-tables` | Scan filled `draft_fill.json` for `temp:` markers, deduplicate, aggregate block references, output `naming_tables.json`. Optionally updates `cue_sheet.md` with derived naming tables (`--md`). |
 | `normalize-fill` | Normalize/lint LLM-filled JSON. Standardizes `shot_size` (WS/MS/CU/EWS/ECU) and `motion` enums, strips `[visual: ...]` / `[OCR detected: ...]` hint prefixes, checks `temp:` marker consistency with `needs_confirmation`, reports empty required fields. Use `--fix` to auto-normalize + write; default is lint-only. |
-| `validate-cue-json` | Structural validation (time, required fields, duplicates) + quality warnings (empty recommended fields, temp-name consistency) + delivery readiness check. `Valid: YES` means no structural errors; `Delivery ready: YES` means all recommended fields are filled and naming is consistent. |
+| `validate-cue-json` | Structural validation (time, required fields, duplicates) + quality warnings (empty recommended fields, temp-name consistency) + delivery readiness check. `Valid: YES` means no structural errors; `Delivery ready: YES` means all required fields are filled, all temp: markers have matching needs_confirmation entries, and keyframe files exist (with `--check-files`). Empty recommended fields generate warnings but do not block delivery. |
 | `export-md` | Generate Markdown final from final_cues.json |
 | `build-xlsx` | Generate Excel final from final_cues.json |
 | `list-templates` | List all available templates (built-in + custom) with name, description, strategy, column count, and source. |
