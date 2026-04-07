@@ -11,11 +11,11 @@ import importlib
 import json
 import math
 import os
-from pathlib import Path
 import re
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 from typing import Any
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -135,7 +135,6 @@ _STRUCTURAL_COLUMN_FIELDS = {"shot_block", "start_time", "end_time"}
 # Current template schema version. Templates may include "schema_version" to declare
 # compatibility. Newer scripts can still load older templates (backward compat).
 TEMPLATE_SCHEMA_VERSION = 2
-_STRUCTURAL_COLUMN_FIELDS = {"shot_block", "start_time", "end_time"}
 
 
 def validate_template_json(data: dict[str, Any]) -> list[str]:
@@ -1456,7 +1455,7 @@ def detect_scenes_scenedetect(video_path: Path, threshold: float) -> tuple[list[
     """Use PySceneDetect ContentDetector if available. Returns (candidates, error_message).
     Returns (None, reason) if not installed or runtime fails."""
     try:
-        from scenedetect import open_video, SceneManager
+        from scenedetect import SceneManager, open_video
         from scenedetect.detectors import ContentDetector
     except ImportError:
         return None, "scenedetect not installed"
@@ -2122,7 +2121,8 @@ def cmd_scan_video(args: argparse.Namespace) -> int:
         "warnings": [n for n in notes if "unavailable" in n.lower() or "failed" in n.lower() or "degraded" in n.lower() or "skipped" in n.lower()],
         "notes": notes,
         "degradation": analysis["degradation"],
-        "next_recommended_step": f"draft-from-analysis --analysis-json {analysis_path} --output {out_dir / 'cue_sheet.md'} --template production",
+        "next_recommended_step": f"draft-from-analysis --analysis-json {analysis_path} --output {out_dir / 'cue_sheet.md'} --template <TEMPLATE>",
+        "available_templates": sorted(TEMPLATE_COLUMNS.keys()),
     }
 
     if args.output_format == "json":
@@ -2137,7 +2137,7 @@ def cmd_scan_video(args: argparse.Namespace) -> int:
         if summary["warnings"]:
             for w in summary["warnings"]:
                 print(f"  ⚠ {w}")
-        print(f"Next step: draft-from-analysis")
+        print("Next step: draft-from-analysis")
 
     return 0
 
@@ -2546,8 +2546,33 @@ def cmd_draft_from_analysis(args: argparse.Namespace) -> int:
                 has_prefill = True
 
             elif prefill_src == "needs_confirmation":
-                row[col] = "character names; scene names"
-                has_prefill = True
+                # Only pre-fill if template actually has naming fields
+                naming_fields_set = _get_naming_fields_from_template(template)
+                if naming_fields_set:
+                    # Build category-aware suggestion from template metadata
+                    categories: set[str] = set()
+                    tmpl_def = get_template_definition(template)
+                    if tmpl_def and "columns" in tmpl_def:
+                        for c in tmpl_def["columns"]:
+                            if isinstance(c, dict) and c.get("naming_field"):
+                                cat = c.get("naming_category", "")
+                                if cat:
+                                    categories.add(cat)
+                    if not categories:
+                        # Fallback: infer from field names
+                        for f in naming_fields_set:
+                            if f == "characters":
+                                categories.add("character names")
+                            elif f in ("scene", "location"):
+                                categories.add("scene names")
+                            else:
+                                categories.add(f"{f} names")
+                    else:
+                        categories = {f"{c.rstrip('s')} names" for c in categories}
+                    row[col] = "; ".join(sorted(categories))
+                    has_prefill = True
+                else:
+                    row[col] = ""
 
             elif prefill_src == "visual_mood" and vf:
                 hints = []
@@ -3476,6 +3501,22 @@ _OCR_HINT_RE = re.compile(r"\[OCR detected:\s*[^\]]*\]\s*")
 _MOTION_HINT_RE = re.compile(r"\[motion-hint:\s*[^\]]*\]\s*")
 
 
+def is_hint_only_value(value: str) -> bool:
+    """Check if a field value is only a machine-generated hint (not real content).
+
+    Returns True if the value is empty or contains only [visual: ...],
+    [OCR detected: ...], or [motion-hint: ...] prefixes with no user/LLM content after.
+    This is the single source of truth for hint-only detection, used by
+    build-final-skeleton (completeness warnings) and normalize-fill.
+    """
+    if not value or not value.strip():
+        return True
+    stripped = _VISUAL_HINT_RE.sub("", value)
+    stripped = _OCR_HINT_RE.sub("", stripped)
+    stripped = _MOTION_HINT_RE.sub("", stripped)
+    return not stripped.strip()
+
+
 def normalize_shot_size(value: str) -> tuple[str, bool]:
     """Normalize shot_size to enum value. Returns (normalized, was_changed)."""
     stripped = value.strip()
@@ -4000,7 +4041,7 @@ def cmd_build_final_skeleton(args: argparse.Namespace) -> int:
             for row in blocks:
                 for f in content_cols:
                     val = row.get(f, "")
-                    if not val or val.startswith("[visual:") or val.startswith("[OCR detected:"):
+                    if is_hint_only_value(val):
                         empty_count += 1
             if empty_count > 0:
                 print(f"WARNING: fill_status is 'partial' — {empty_count} content field(s) still empty or hint-only "
@@ -4411,17 +4452,17 @@ def cmd_show_template(args: argparse.Namespace) -> int:
             print(f"    Description: {seg.get('description', '')}")
             triggers = seg.get("split_triggers", [])
             if triggers:
-                print(f"    Split triggers:")
+                print("    Split triggers:")
                 for t in triggers:
                     print(f"      - {t}")
             bias = seg.get("merge_bias", [])
             if bias:
-                print(f"    Merge bias:")
+                print("    Merge bias:")
                 for b in bias:
                     print(f"      - {b}")
             kf = seg.get("keyframe_priority", [])
             if kf:
-                print(f"    Keyframe priority:")
+                print("    Keyframe priority:")
                 for k in kf:
                     print(f"      - {k}")
         cols = tmpl.get("columns", [])
@@ -4550,6 +4591,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"cuesheet-creator {__version__}")
     parser.add_argument("--ffmpeg-path", type=resolved_path, default=None, help="Explicit path to ffmpeg executable (overrides auto-detection)")
     parser.add_argument("--ffprobe-path", type=resolved_path, default=None, help="Explicit path to ffprobe executable (overrides auto-detection)")
+    parser.add_argument("--debug", action="store_true", default=False, help="Print full traceback on errors (also: CUESHEET_CREATOR_DEBUG=1)")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     selfcheck = subparsers.add_parser("selfcheck", help="Check runtime environment")
@@ -4743,10 +4785,16 @@ def main() -> int:
         _CLI_COMMAND_OVERRIDES["ffmpeg"] = args.ffmpeg_path
     if args.ffprobe_path:
         _CLI_COMMAND_OVERRIDES["ffprobe"] = args.ffprobe_path
+    debug = args.debug or os.environ.get("CUESHEET_CREATOR_DEBUG", "").strip().lower() in ("1", "true", "yes")
     try:
         return int(args.func(args))
     except Exception as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+        if debug:
+            import traceback
+            traceback.print_exc()
+        else:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            print("(use --debug or set CUESHEET_CREATOR_DEBUG=1 for full traceback)", file=sys.stderr)
         return 1
 
 
