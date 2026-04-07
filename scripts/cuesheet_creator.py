@@ -79,8 +79,10 @@ from cc.constants import (  # noqa: F811
     SUPPORTED_OPTIONAL_GROUPS,
     TEMPLATE_COLUMNS,
     TEMPLATE_SCHEMA_VERSION,
+    USER_DATA_DIR,
     _BUILTIN_TEMPLATE_COLUMNS,
     _BUILTIN_TEMPLATE_NAMES,
+    _CC_PACKAGE_DIR,
     _STRUCTURAL_COLUMN_FIELDS,
     _TEMPLATE_REGISTRY,
     _TEMPLATE_REQUIRED_COLUMN_FIELDS,
@@ -185,7 +187,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # --- install-deps ---
     install = subparsers.add_parser("install-deps", help="Install missing Python dependencies")
-    install.add_argument("--include-optional", default="none", help="Optional dependency groups: none / scene / asr / ocr / all (comma-separated)")
+    install.add_argument("--include-optional", default="none", help="Optional dependency groups: none / scene / asr / ocr / ocr-extra / all / everything (comma-separated). 'all' = scene+asr+ocr; 'everything' = all groups incl. ocr-extra")
     install.add_argument("--dry-run", action="store_true", help="Output install plan only, do not install")
     install.add_argument("--report-out", type=resolved_path, help="Write install report JSON")
     install.add_argument("--output-format", choices=["text", "json"], default="text")

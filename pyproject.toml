@@ -45,10 +45,13 @@ Issues = "https://github.com/jing1ei/cuesheet-creator/issues"
 
 [tool.setuptools]
 py-modules = ["cuesheet_creator"]
-packages = ["cc", "cc.exporters"]
+packages = ["cc", "cc.exporters", "cc.data"]
 
 [tool.setuptools.package-dir]
 "" = "scripts"
+
+[tool.setuptools.package-data]
+"cc.data" = ["templates/*.json"]
 
 [tool.ruff]
 line-length = 120

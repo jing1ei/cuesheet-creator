@@ -1,0 +1,53 @@
+{
+  "name": "music-director",
+  "schema_version": 2,
+  "description": "For composer / scoring communication",
+
+  "perspective": "Judge mood and rhythmic function first. Specify music entry, change, and exit points. Instrumentation suggestions should be concrete (e.g. 'pizzicato bass + granular electronic pulse', not 'add some tension').",
+
+  "segmentation": {
+    "strategy": "emotional-arc",
+    "description": "Split blocks on mood transitions and musical function changes. A single visual scene may have multiple emotional beats that each need separate scoring direction.",
+    "split_triggers": [
+      "Mood shift (tension -> release, calm -> urgent)",
+      "Music function change (underscore -> featured -> silence)",
+      "Rhythmic shift (tempo change, meter change, pulse entry/exit)",
+      "Dynamic shift (pp -> ff, crescendo peak, subito piano)",
+      "Dialogue density change (music must accommodate vs. music can dominate)"
+    ],
+    "merge_bias": [
+      "Merge across visual cuts if the emotional arc is continuous",
+      "Merge shot-reverse-shot in dialogue if the underscore function doesn't change",
+      "Do NOT merge across mood transitions even if the visual setup is identical"
+    ],
+    "keyframe_priority": [
+      "Frame capturing the peak emotional intensity of the block",
+      "Frame showing character expression that drives the mood",
+      "Frame showing spatial scale (wide = epic/ambient, tight = intimate/tense)",
+      "For transition blocks, frame at the emotional pivot point"
+    ]
+  },
+
+  "columns": [
+    {"field": "shot_block", "label": "Shot Block", "width": 12, "required": true, "recommended": false, "naming_field": false, "prefill_source": "structural"},
+    {"field": "start_time", "label": "Start", "width": 14, "required": true, "recommended": false, "naming_field": false, "prefill_source": "structural"},
+    {"field": "end_time", "label": "End", "width": 14, "required": true, "recommended": false, "naming_field": false, "prefill_source": "structural"},
+    {"field": "mood", "label": "Mood", "width": 20, "required": true, "recommended": true, "naming_field": false, "prefill_source": "visual_mood"},
+    {"field": "event", "label": "Event", "width": 28, "required": true, "recommended": true, "naming_field": false, "prefill_source": null},
+    {"field": "important_dialogue", "label": "Dialogue", "width": 30, "required": false, "recommended": false, "naming_field": false, "prefill_source": "asr"},
+    {"field": "music_note", "label": "Music Note", "width": 28, "required": true, "recommended": true, "naming_field": false, "prefill_source": null},
+    {"field": "rhythm_change", "label": "Rhythm Change", "width": 20, "required": false, "recommended": true, "naming_field": false, "prefill_source": null},
+    {"field": "instrumentation", "label": "Instrumentation", "width": 20, "required": false, "recommended": true, "naming_field": false, "prefill_source": null},
+    {"field": "dynamics", "label": "Dynamics", "width": 18, "required": false, "recommended": true, "naming_field": false, "prefill_source": null},
+    {"field": "confidence", "label": "Confidence", "width": 18, "required": false, "recommended": false, "naming_field": false, "prefill_source": "confidence"},
+    {"field": "needs_confirmation", "label": "Needs Confirmation", "width": 24, "required": false, "recommended": false, "naming_field": false, "prefill_source": "needs_confirmation"}
+  ],
+
+  "fill_guidance": [
+    "**mood**: emotional tone AND progression within the block (e.g. 'tension rising -> brief suppression -> pre-burst buildup')",
+    "**music_note**: entry/exit/change points with timecodes (e.g. 'sub-bass drone enters at 8.4s, add unstable string tremolo at 12s')",
+    "**rhythm_change**: BPM shifts, pulse changes (e.g. '8.4s: from no rhythm into slow pulse ~60bpm; 15s: accelerates to ~90bpm')",
+    "**instrumentation**: specific instruments/textures (e.g. 'sub-bass drone + strings col legno -> tremolo transition')",
+    "**dynamics**: progression using standard notation (e.g. 'pp -> mp -> mf, buildup, do not release in this block')"
+  ]
+}

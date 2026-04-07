@@ -318,6 +318,11 @@ def cmd_merge_blocks(args: "argparse.Namespace") -> int:  # noqa: F821
                 "merge_reason": "auto-appended: not referenced in merge plan", "unmerged": True,
             })
 
+    # Sort all merged blocks by timeline before validation and output.
+    # This prevents false overlap warnings when the merge plan is valid
+    # but its groups are not in chronological order.
+    merged_blocks.sort(key=lambda b: (b["start_seconds"], b["end_seconds"]))
+
     for i in range(1, len(merged_blocks)):
         prev_end = merged_blocks[i - 1]["end_seconds"]
         curr_start = merged_blocks[i]["start_seconds"]

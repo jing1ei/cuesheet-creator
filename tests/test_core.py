@@ -1723,7 +1723,7 @@ def test_draft_markdown_relative_keyframe_no_cwd_drift():
         md_content = md_out.read_text(encoding="utf-8")
         # The Markdown link MUST be the original relative path, not a CWD-mangled one
         assert "![kf](keyframes/frame_0001.jpg)" in md_content, (
-            f"Expected ![kf](keyframes/frame_0001.jpg) in Markdown, got:\n"
+            "Expected ![kf](keyframes/frame_0001.jpg) in Markdown, got:\n"
             + "\n".join(line for line in md_content.split("\n") if "kf" in line.lower())
         )
         # Must NOT contain ".." path segments (would indicate CWD drift)
@@ -1871,6 +1871,68 @@ def test_export_md_fail_on_delivery_gap():
         with contextlib.redirect_stdout(captured2):
             result_with_flag = cc.cmd_export_md(args_with_flag)
         assert result_with_flag == 1, "With --fail-on-delivery-gap, should return 1"
+
+
+# ---------------------------------------------------------------------------
+# 20. Regression: merge-blocks sorts output chronologically
+# ---------------------------------------------------------------------------
+
+def test_merge_blocks_sorts_output_chronologically():
+    """A valid but out-of-order merge plan should produce chronologically sorted output
+    and no false overlap warnings."""
+    import argparse
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        analysis = {
+            "draft_blocks": [
+                {"shot_block": "A1", "start_seconds": 0.0, "start_time": "00:00:00.000",
+                 "end_seconds": 5.0, "end_time": "00:00:05.000", "keyframe": None},
+                {"shot_block": "A2", "start_seconds": 5.0, "start_time": "00:00:05.000",
+                 "end_seconds": 10.0, "end_time": "00:00:10.000", "keyframe": None},
+                {"shot_block": "A3", "start_seconds": 10.0, "start_time": "00:00:10.000",
+                 "end_seconds": 15.0, "end_time": "00:00:15.000", "keyframe": None},
+            ]
+        }
+        # Intentionally reversed order: B2 before B1
+        merge_plan = {
+            "merges": [
+                {"source_blocks": ["A3"], "new_id": "B2", "keyframe": None, "reason": "second group"},
+                {"source_blocks": ["A1", "A2"], "new_id": "B1", "keyframe": None, "reason": "first group"},
+            ]
+        }
+        analysis_path = Path(tmpdir) / "analysis.json"
+        merge_path = Path(tmpdir) / "merge_plan.json"
+        output_path = Path(tmpdir) / "merged.json"
+
+        analysis_path.write_text(json.dumps(analysis), encoding="utf-8")
+        merge_path.write_text(json.dumps(merge_plan), encoding="utf-8")
+
+        args = argparse.Namespace(
+            analysis_json=str(analysis_path),
+            merge_plan=str(merge_path),
+            output=str(output_path),
+            strict=False,
+        )
+
+        import contextlib
+        import io
+        captured_err = io.StringIO()
+        with contextlib.redirect_stderr(captured_err):
+            result = cc.cmd_merge_blocks(args)
+
+        assert result == 0, "merge-blocks should succeed"
+        stderr_text = captured_err.getvalue()
+        assert "overlaps" not in stderr_text.lower(), (
+            f"Should NOT produce false overlap warning, got: {stderr_text}"
+        )
+
+        output = json.loads(output_path.read_text(encoding="utf-8"))
+        blocks = output["blocks"]
+        assert len(blocks) == 2
+        # B1 (0-10s) should come before B2 (10-15s) regardless of plan order
+        assert blocks[0]["shot_block"] == "B1", f"First block should be B1, got {blocks[0]['shot_block']}"
+        assert blocks[1]["shot_block"] == "B2", f"Second block should be B2, got {blocks[1]['shot_block']}"
+        assert blocks[0]["start_seconds"] < blocks[1]["start_seconds"], "Blocks should be sorted chronologically"
 
 
 # ---------------------------------------------------------------------------

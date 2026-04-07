@@ -8,6 +8,7 @@ from typing import Any
 from cc.constants import (
     _BUILTIN_TEMPLATE_COLUMNS,
     _BUILTIN_TEMPLATE_NAMES,
+    _CC_PACKAGE_DIR,
     _STRUCTURAL_COLUMN_FIELDS,
     _TEMPLATE_REGISTRY,
     _TEMPLATE_REQUIRED_COLUMN_FIELDS,
@@ -16,6 +17,7 @@ from cc.constants import (
     SKILL_ROOT,
     TEMPLATE_COLUMNS,
     TEMPLATE_SCHEMA_VERSION,
+    USER_DATA_DIR,
 )
 
 # ---------------------------------------------------------------------------
@@ -134,20 +136,32 @@ def _template_column_widths_from_json(data: dict[str, Any]) -> dict[str, int]:
 def load_templates() -> None:
     """Scan built-in and custom template directories, populate the runtime registry.
 
-    Built-in templates are in <skill-root>/templates/*.json.
-    Custom templates are in <skill-root>/templates/custom/*.json.
-    Custom templates take priority on name collision.
+    Built-in templates are searched in this order:
+      1. <skill-root>/templates/*.json   (source / editable install layout)
+      2. cc/data/templates/*.json         (wheel-installed package data)
+    Custom templates:
+      - <skill-root>/templates/custom/*.json  (source layout)
+      - ~/.cuesheet-creator/templates/custom/*.json (always, for both modes)
     """
-    # Mutate the shared dicts/sets in cc.constants in-place
+    from pathlib import Path
+
     _TEMPLATE_REGISTRY.clear()
     TEMPLATE_COLUMNS.clear()
     _BUILTIN_TEMPLATE_NAMES.clear()
 
-    builtin_dir = SKILL_ROOT / "templates"
-    custom_dir = builtin_dir / "custom"
+    # --- Built-in templates ---
+    # Try source-layout first, then package-bundled data
+    builtin_dirs: list[Path] = []
+    source_tmpl_dir = SKILL_ROOT / "templates"
+    if source_tmpl_dir.is_dir() and any(source_tmpl_dir.glob("*.json")):
+        builtin_dirs.append(source_tmpl_dir)
+    else:
+        # Installed mode: templates bundled inside cc/data/templates/
+        pkg_tmpl_dir = _CC_PACKAGE_DIR / "data" / "templates"
+        if pkg_tmpl_dir.is_dir():
+            builtin_dirs.append(pkg_tmpl_dir)
 
-    # Load built-in templates
-    if builtin_dir.exists():
+    for builtin_dir in builtin_dirs:
         for json_file in sorted(builtin_dir.glob("*.json")):
             try:
                 data = json.loads(json_file.read_text(encoding="utf-8"))
@@ -164,8 +178,17 @@ def load_templates() -> None:
             except Exception as exc:
                 print(f"WARNING: Failed to load built-in template {json_file.name}: {exc}", file=sys.stderr)
 
-    # Load custom templates (override built-in on name collision)
-    if custom_dir.exists():
+    # --- Custom templates ---
+    # Search both source-layout custom dir and user-data custom dir
+    custom_dirs: list[Path] = []
+    source_custom = source_tmpl_dir / "custom"
+    if source_custom.is_dir():
+        custom_dirs.append(source_custom)
+    user_custom = USER_DATA_DIR / "templates" / "custom"
+    if user_custom.is_dir() and user_custom != source_custom:
+        custom_dirs.append(user_custom)
+
+    for custom_dir in custom_dirs:
         for json_file in sorted(custom_dir.glob("*.json")):
             try:
                 data = json.loads(json_file.read_text(encoding="utf-8"))

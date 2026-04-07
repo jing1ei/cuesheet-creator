@@ -106,8 +106,26 @@ PREPARE_ENV_DEFAULT_FILES = {
     "report": "prepare_env.json",
 }
 
-# Skill root: two levels up from scripts/cc/constants.py -> repo root
-SKILL_ROOT = Path(__file__).resolve().parent.parent.parent
+# Skill root: detect source-layout vs installed-package layout.
+# Source layout: repo/scripts/cc/constants.py -> repo root is parent.parent.parent
+# Installed:     site-packages/cc/constants.py -> no meaningful repo root
+_CC_PACKAGE_DIR = Path(__file__).resolve().parent
+
+def _detect_skill_root() -> Path:
+    """Return the repo root if running from source, or the package dir otherwise."""
+    candidate = _CC_PACKAGE_DIR.parent.parent  # scripts/ -> repo root
+    # Heuristic: source layout has templates/ and SKILL.md at the root
+    if (candidate / "templates").is_dir() and (candidate / "SKILL.md").is_file():
+        return candidate
+    # Installed mode — return the cc package dir as fallback
+    return _CC_PACKAGE_DIR
+
+SKILL_ROOT = _detect_skill_root()
+
+# User-writable data directory for custom templates and other mutable state.
+# Cross-platform: ~/.cuesheet-creator/
+USER_DATA_DIR = Path.home() / ".cuesheet-creator"
+
 LOCAL_FFMPEG_BIN_ENV = "CUESHEET_CREATOR_FFMPEG_BIN_DIR"
 LOCAL_FFMPEG_SEARCH_ROOT = SKILL_ROOT / "tools" / "ffmpeg"
 

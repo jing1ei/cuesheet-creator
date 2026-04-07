@@ -11,6 +11,7 @@ from cc.constants import (
     _TEMPLATE_REGISTRY,
     SKILL_ROOT,
     TEMPLATE_COLUMNS,
+    USER_DATA_DIR,
 )
 from cc.templates import (
     get_template_definition,
@@ -131,7 +132,13 @@ def cmd_save_template(args: "argparse.Namespace") -> int:  # noqa: F821
         print(f"ERROR: '{name}' is a built-in template. Use --overwrite to replace with a custom version.", file=sys.stderr)
         return 1
 
-    custom_dir = SKILL_ROOT / "templates" / "custom"
+    # Prefer source-layout custom dir if available (for dev workflows);
+    # otherwise use user-data dir (for installed-package users).
+    source_custom = SKILL_ROOT / "templates" / "custom"
+    if (SKILL_ROOT / "templates").is_dir() and (SKILL_ROOT / "SKILL.md").is_file():
+        custom_dir = source_custom
+    else:
+        custom_dir = USER_DATA_DIR / "templates" / "custom"
     custom_dir.mkdir(parents=True, exist_ok=True)
     dest = custom_dir / f"{name}.json"
 

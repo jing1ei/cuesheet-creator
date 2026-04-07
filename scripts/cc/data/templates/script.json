@@ -1,0 +1,53 @@
+{
+  "name": "script",
+  "schema_version": 2,
+  "description": "For story discussion and early-stage breakdown",
+
+  "perspective": "State what happens first, then who is present and where. Do not over-load with camera technical info.",
+
+  "segmentation": {
+    "strategy": "narrative-beat",
+    "description": "Split blocks on narrative beats — story events, character entrances/exits, location changes. Visual camera style is secondary to story progression.",
+    "split_triggers": [
+      "New story event or narrative beat",
+      "Character entrance or exit",
+      "Location or setting change",
+      "Time skip or flashback transition",
+      "Shift in narrative mode (dialogue / action / inner monologue / narration)"
+    ],
+    "merge_bias": [
+      "Merge continuous dialogue within the same scene and character group",
+      "Merge visual style changes that don't affect the story beat",
+      "Do NOT merge across story event boundaries"
+    ],
+    "keyframe_priority": [
+      "Frame showing the key story action or event",
+      "Frame showing character grouping and spatial relationships",
+      "Frame establishing the location/setting",
+      "For dialogue blocks, frame showing the primary speaker"
+    ]
+  },
+
+  "columns": [
+    {"field": "shot_block", "label": "Shot Block", "width": 12, "required": true, "recommended": false, "naming_field": false, "prefill_source": "structural"},
+    {"field": "start_time", "label": "Start", "width": 14, "required": true, "recommended": false, "naming_field": false, "prefill_source": "structural"},
+    {"field": "end_time", "label": "End", "width": 14, "required": true, "recommended": false, "naming_field": false, "prefill_source": "structural"},
+    {"field": "scene", "label": "Scene", "width": 18, "required": true, "recommended": true, "naming_field": true, "prefill_source": null},
+    {"field": "location", "label": "Location", "width": 18, "required": true, "recommended": true, "naming_field": true, "prefill_source": null},
+    {"field": "characters", "label": "Characters", "width": 20, "required": true, "recommended": true, "naming_field": true, "prefill_source": null},
+    {"field": "event", "label": "Event", "width": 28, "required": true, "recommended": true, "naming_field": false, "prefill_source": null},
+    {"field": "important_dialogue", "label": "Dialogue", "width": 30, "required": false, "recommended": false, "naming_field": false, "prefill_source": "asr"},
+    {"field": "confidence", "label": "Confidence", "width": 18, "required": false, "recommended": false, "naming_field": false, "prefill_source": "confidence"},
+    {"field": "needs_confirmation", "label": "Needs Confirmation", "width": 24, "required": false, "recommended": false, "naming_field": false, "prefill_source": "needs_confirmation"}
+  ],
+
+  "fill_guidance": [
+    "**scene**: scene name or setup (use `temp: xxx` if unconfirmed)",
+    "**location**: where this takes place",
+    "**characters**: who is present",
+    "**event**: what happens — focus on story, not camera",
+    "**important_dialogue**: key lines / narration / inner monologue",
+    "**confidence**: e.g. `segment=high; dialogue=low`",
+    "**needs_confirmation**: items that need user confirmation"
+  ]
+}

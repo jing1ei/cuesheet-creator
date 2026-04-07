@@ -41,8 +41,11 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install package
-        run: pip install .
+      - name: Build and install wheel
+        run: |
+          pip install build
+          python -m build --wheel
+          pip install dist/*.whl
 
       - name: Verify console entry point
         run: cuesheet-creator --version
@@ -51,6 +54,37 @@ jobs:
         run: |
           output=$(cuesheet-creator selfcheck --output-format json 2>/dev/null || true)
           echo "$output" | python -c "import sys, json; json.load(sys.stdin); print('OK: selfcheck JSON parseable')"
+
+      - name: Verify templates load from package (not fallback)
+        run: |
+          python -c "
+          import json
+          import subprocess
+          result = subprocess.run(['cuesheet-creator', 'list-templates', '--output-format', 'json'],
+                                  capture_output=True, text=True)
+          data = json.loads(result.stdout)
+          templates = {t['name']: t for t in data['templates']}
+          assert 'production' in templates, 'production template missing'
+          assert 'music-director' in templates, 'music-director template missing'
+          assert 'script' in templates, 'script template missing'
+          for name, t in templates.items():
+              assert t['source'] == 'built-in', f'{name} source is {t[\"source\"]}, expected built-in'
+          print(f'OK: {len(templates)} built-in templates loaded from package')
+          "
+
+      - name: Verify show-template has full metadata
+        run: |
+          python -c "
+          import json
+          import subprocess
+          result = subprocess.run(['cuesheet-creator', 'show-template', '--name', 'production', '--output-format', 'json'],
+                                  capture_output=True, text=True)
+          data = json.loads(result.stdout)
+          assert data.get('segmentation'), 'segmentation missing from package-installed template'
+          assert data['segmentation'].get('strategy') == 'scene-cut', f'wrong strategy: {data[\"segmentation\"].get(\"strategy\")}'
+          assert len(data.get('columns', [])) == 17, f'expected 17 columns, got {len(data.get(\"columns\", []))}'
+          print('OK: production template has full metadata from package install')
+          "
 
   lint:
     runs-on: ubuntu-latest
