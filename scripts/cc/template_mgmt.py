@@ -17,7 +17,7 @@ from cc.templates import (
     load_templates,
     validate_template_json,
 )
-from cc.utils import write_json
+from cc.utils import read_json, write_json
 
 
 def cmd_list_templates(args: "argparse.Namespace") -> int:  # noqa: F821
@@ -113,7 +113,7 @@ def cmd_save_template(args: "argparse.Namespace") -> int:  # noqa: F821
     if not input_path.exists():
         raise FileNotFoundError(f"Template input file not found: {input_path}")
 
-    data = json.loads(input_path.read_text(encoding="utf-8"))
+    data = read_json(input_path)
 
     errors = validate_template_json(data)
     if errors:

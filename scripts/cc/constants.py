@@ -94,7 +94,9 @@ PREPARE_ENV_MODES = {
     "install-scene": {"scene"},
     "install-asr": {"asr"},
     "install-ocr": {"ocr"},
-    "install-all": set(SUPPORTED_OPTIONAL_GROUPS),
+    "install-ocr-extra": {"ocr", "ocr-extra"},
+    "install-all": {"asr", "ocr", "scene"},  # aligned with pyproject.toml [all] extra
+    "install-everything": set(SUPPORTED_OPTIONAL_GROUPS),  # truly everything incl. ocr-extra
 }
 
 PREPARE_ENV_DEFAULT_FILES = {

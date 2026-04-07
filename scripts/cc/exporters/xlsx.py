@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import tempfile
 from pathlib import Path
 
 from cc.constants import DEFAULT_COLUMN_WIDTHS, TEMPLATE_COLUMNS
 from cc.templates import get_template_column_widths, validate_template_name
-from cc.utils import ensure_parent, resolve_keyframe_path, scale_dimensions
+from cc.utils import ensure_parent, read_json, resolve_keyframe_path, scale_dimensions
 from cc.validation import evaluate_delivery_readiness
 
 
@@ -24,7 +25,7 @@ def cmd_build_xlsx(args: "argparse.Namespace") -> int:  # noqa: F821
     if not cue_json.exists():
         raise FileNotFoundError(f"Cue JSON not found: {cue_json}")
 
-    payload = json.loads(cue_json.read_text(encoding="utf-8"))
+    payload = read_json(cue_json)
     template = args.template or payload.get("template") or "production"
     validate_template_name(template)
 
@@ -53,6 +54,7 @@ def cmd_build_xlsx(args: "argparse.Namespace") -> int:  # noqa: F821
 
     embedded_keyframes = 0
     missing_keyframes: list[str] = []
+    thumb_dir = tempfile.mkdtemp(prefix="cuesheet_thumbs_") if keyframe_col_index is not None else None
 
     for row_idx, item in enumerate(rows, start=2):
         for col_idx, column_name in enumerate(columns, start=1):
@@ -69,7 +71,7 @@ def cmd_build_xlsx(args: "argparse.Namespace") -> int:  # noqa: F821
                     scaled_w, scaled_h = scale_dimensions(width, height, args.image_max_width, args.image_max_height)
                     _lanczos = getattr(PILImage, "Resampling", PILImage).LANCZOS
                     thumb = img.resize((scaled_w, scaled_h), _lanczos)
-                    thumb_path = keyframe_path.parent / f".thumb_{keyframe_path.name}"
+                    thumb_path = Path(thumb_dir) / f"thumb_{row_idx}_{keyframe_path.name}"
                     thumb.save(str(thumb_path), "JPEG", quality=85)
                 xl_image = XLImage(str(thumb_path))
                 xl_image.width = scaled_w
@@ -102,17 +104,11 @@ def cmd_build_xlsx(args: "argparse.Namespace") -> int:  # noqa: F821
     try:
         wb.save(output_path)
     finally:
-        if keyframe_col_index is not None:
-            for item in rows:
-                kf_value = item.get("keyframe")
-                kf_path = resolve_keyframe_path(base_dir, kf_value)
-                if kf_path:
-                    thumb = kf_path.parent / f".thumb_{kf_path.name}"
-                    if thumb.exists():
-                        try:
-                            thumb.unlink()
-                        except OSError:
-                            pass
+        # Clean up temp thumbnails regardless of save success/failure —
+        # they live in an isolated temp directory, not next to keyframes
+        if thumb_dir:
+            import shutil
+            shutil.rmtree(thumb_dir, ignore_errors=True)
 
     delivery = evaluate_delivery_readiness(
         rows, template, base_dir=base_dir, check_files=True,

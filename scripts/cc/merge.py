@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from cc.templates import get_template_segmentation
-from cc.utils import format_seconds, make_block_id, write_json
+from cc.utils import format_seconds, make_block_id, read_json, write_json
 
 
 def _strategy_weight_multipliers(strategy: str) -> dict[str, float]:
@@ -110,7 +110,7 @@ def cmd_suggest_merges(args: "argparse.Namespace") -> int:  # noqa: F821
     if not analysis_path.exists():
         raise FileNotFoundError(f"analysis.json not found: {analysis_path}")
 
-    analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
+    analysis = read_json(analysis_path)
     draft_blocks = analysis.get("draft_blocks", [])
     asr_segments = analysis.get("asr", {}).get("segments", [])
 
@@ -125,7 +125,7 @@ def cmd_suggest_merges(args: "argparse.Namespace") -> int:  # noqa: F821
         draft_fill_path = analysis_path.parent / "draft_fill.json"
         if draft_fill_path.exists():
             try:
-                draft_fill = json.loads(draft_fill_path.read_text(encoding="utf-8"))
+                draft_fill = read_json(draft_fill_path)
                 template_name = draft_fill.get("template")
             except Exception:
                 pass
@@ -240,8 +240,8 @@ def cmd_merge_blocks(args: "argparse.Namespace") -> int:  # noqa: F821
     if not merge_plan_path.exists():
         raise FileNotFoundError(f"Merge plan not found: {merge_plan_path}")
 
-    analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
-    merge_plan = json.loads(merge_plan_path.read_text(encoding="utf-8"))
+    analysis = read_json(analysis_path)
+    merge_plan = read_json(merge_plan_path)
     draft_blocks = analysis.get("draft_blocks", [])
     block_lookup: dict[str, dict[str, Any]] = {b["shot_block"]: b for b in draft_blocks}
     all_source_ids: set[str] = set(block_lookup.keys())

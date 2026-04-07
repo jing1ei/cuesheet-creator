@@ -10,7 +10,7 @@ from typing import Any
 from cc.constants import TEMPLATE_COLUMNS
 from cc.normalize import is_hint_only_value
 from cc.templates import validate_template_name
-from cc.utils import write_json
+from cc.utils import read_json, write_json
 
 
 def cmd_build_final_skeleton(args: "argparse.Namespace") -> int:  # noqa: F821
@@ -20,7 +20,7 @@ def cmd_build_final_skeleton(args: "argparse.Namespace") -> int:  # noqa: F821
     if not source_path.exists():
         raise FileNotFoundError(f"Source JSON not found: {source_path}")
 
-    source = json.loads(source_path.read_text(encoding="utf-8"))
+    source = read_json(source_path)
 
     is_fill_input = "fill_status" in source
     if is_fill_input and source.get("rows"):

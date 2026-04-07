@@ -17,6 +17,7 @@ from cc.templates import (
     validate_template_name,
 )
 from cc.utils import (
+    read_json,
     resolve_keyframe_path,
     seconds_from_timecode,
     write_json,
@@ -152,7 +153,7 @@ def cmd_validate_cue_json(args: "argparse.Namespace") -> int:  # noqa: F821
     if not cue_json.exists():
         raise FileNotFoundError(f"Cue JSON not found: {cue_json}")
 
-    payload = json.loads(cue_json.read_text(encoding="utf-8"))
+    payload = read_json(cue_json)
     template = args.template or payload.get("template") or "production"
     validate_template_name(template)
 
@@ -228,20 +229,21 @@ def cmd_validate_cue_json(args: "argparse.Namespace") -> int:  # noqa: F821
             if rec_field in expected_columns and not str(row.get(rec_field, "")).strip():
                 warnings.append(f"{label}: recommended field '{rec_field}' is empty for template '{template}'.")
 
-    # --- Optional: keyframe file existence check ---
-    if hasattr(args, "check_files") and args.check_files and "keyframe" in expected_columns:
-        base_dir = Path(args.base_dir).resolve() if hasattr(args, "base_dir") and args.base_dir else cue_json.parent.resolve()
-        for row in rows:
-            label = row.get("shot_block", "?")
-            kf_value = row.get("keyframe", "")
-            if kf_value:
-                kf_path = resolve_keyframe_path(base_dir, kf_value)
-                if kf_path and not kf_path.exists():
-                    warnings.append(f"{label}: keyframe file not found: {kf_path}")
+    # --- Delivery readiness: delegate to the single source of truth ---
+    check_files = bool(hasattr(args, "check_files") and args.check_files)
+    base_dir = Path(args.base_dir).resolve() if hasattr(args, "base_dir") and args.base_dir else cue_json.parent.resolve()
 
-    # Delivery readiness: required fields + temp-name consistency + keyframe existence
-    delivery_gaps = [w for w in warnings if "required field" in w or "no matching entry in needs_confirmation" in w or "keyframe file not found" in w]
-    delivery_ready = len(errors) == 0 and len(delivery_gaps) == 0
+    delivery = evaluate_delivery_readiness(
+        rows, template, base_dir=base_dir, check_files=check_files,
+    )
+
+    # Merge delivery gaps into warnings for the unified report
+    for gap in delivery.get("delivery_gaps", []):
+        if gap not in warnings:
+            warnings.append(gap)
+
+    delivery_gaps = delivery.get("delivery_gaps", [])
+    delivery_ready = len(errors) == 0 and delivery.get("delivery_ready", False)
 
     report = {
         "generated_at": dt.datetime.now().isoformat(timespec="seconds"),

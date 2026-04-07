@@ -25,8 +25,11 @@ jobs:
       - name: Install core dependencies
         run: pip install -r requirements.txt
 
+      - name: Install test dependencies
+        run: pip install pytest
+
       - name: Run tests
-        run: python tests/test_core.py
+        run: python -m pytest tests/ -q
 
   packaging:
     runs-on: ubuntu-latest

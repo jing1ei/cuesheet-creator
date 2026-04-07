@@ -239,7 +239,12 @@ def extract_audio_track(video_path: Path, out_dir: Path, start: float | None = N
     return audio_path, None
 
 
-def run_asr_faster_whisper(audio_path: Path, model_size: str = "base") -> tuple[list[dict[str, Any]] | None, str | None]:
+def run_asr_faster_whisper(
+    audio_path: Path,
+    model_size: str = "base",
+    device: str = "auto",
+    compute_type: str = "auto",
+) -> tuple[list[dict[str, Any]] | None, str | None]:
     """Run faster-whisper ASR."""
     try:
         from faster_whisper import WhisperModel
@@ -247,7 +252,23 @@ def run_asr_faster_whisper(audio_path: Path, model_size: str = "base") -> tuple[
         return None, "faster-whisper not installed"
 
     try:
-        model = WhisperModel(model_size, device="cpu", compute_type="int8")
+        # Resolve "auto" device: prefer CUDA if available, fallback to CPU
+        if device == "auto":
+            try:
+                import torch
+                resolved_device = "cuda" if torch.cuda.is_available() else "cpu"
+            except ImportError:
+                resolved_device = "cpu"
+        else:
+            resolved_device = device
+
+        # Resolve "auto" compute_type based on device
+        if compute_type == "auto":
+            resolved_compute = "float16" if resolved_device == "cuda" else "int8"
+        else:
+            resolved_compute = compute_type
+
+        model = WhisperModel(model_size, device=resolved_device, compute_type=resolved_compute)
         segments_iter, _info = model.transcribe(str(audio_path), beam_size=5)
         results: list[dict[str, Any]] = []
         for segment in segments_iter:
@@ -629,7 +650,11 @@ def cmd_scan_video(args: "argparse.Namespace") -> int:  # noqa: F821, C901
         audio_path, audio_err = extract_audio_track(video_path, out_dir, start=effective_start, end=effective_end)
         if audio_path:
             asr_model = args.asr_model if hasattr(args, "asr_model") and args.asr_model else "base"
-            segments, asr_err = run_asr_faster_whisper(audio_path, model_size=asr_model)
+            asr_device = args.asr_device if hasattr(args, "asr_device") and args.asr_device else "auto"
+            asr_compute = args.asr_compute_type if hasattr(args, "asr_compute_type") and args.asr_compute_type else "auto"
+            segments, asr_err = run_asr_faster_whisper(
+                audio_path, model_size=asr_model, device=asr_device, compute_type=asr_compute,
+            )
             if segments is not None:
                 if effective_start > 0.001:
                     for seg in segments:

@@ -16,7 +16,7 @@ from cc.templates import (
     get_template_prefill_map,
     get_template_segmentation,
 )
-from cc.utils import ensure_parent, relpath_for_markdown, write_json
+from cc.utils import ensure_parent, read_json, relpath_for_markdown, write_json
 
 
 def cmd_draft_from_analysis(args: "argparse.Namespace") -> int:  # noqa: F821, C901
@@ -24,7 +24,7 @@ def cmd_draft_from_analysis(args: "argparse.Namespace") -> int:  # noqa: F821, C
     if not analysis_path.exists():
         raise FileNotFoundError(f"analysis.json not found: {analysis_path}")
 
-    analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
+    analysis = read_json(analysis_path)
     output_path = Path(args.output)
     ensure_parent(output_path)
 
@@ -341,10 +341,17 @@ def cmd_draft_from_analysis(args: "argparse.Namespace") -> int:  # noqa: F821, C
         kf_raw = block.get("keyframe")
         kf_rel = ""
         if kf_raw:
-            try:
-                kf_rel = os.path.relpath(kf_raw, str(output_path.parent)).replace("\\", "/")
-            except Exception:
-                kf_rel = str(Path(kf_raw).name) if kf_raw else ""
+            kf_path = Path(kf_raw)
+            if kf_path.is_absolute():
+                # Absolute path: compute relative to output directory
+                try:
+                    kf_rel = os.path.relpath(str(kf_path), str(output_path.parent)).replace("\\", "/")
+                except Exception:
+                    kf_rel = kf_path.name
+            else:
+                # Already relative (e.g. "keyframes/frame_0001.jpg" from scan-video):
+                # normalize separators and keep as-is to avoid Windows relpath drift
+                kf_rel = str(kf_path).replace("\\", "/")
 
         block_start = block.get("start_seconds", 0.0)
         block_end = block.get("end_seconds", 0.0)

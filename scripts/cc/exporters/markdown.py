@@ -7,7 +7,7 @@ from pathlib import Path
 
 from cc.constants import TEMPLATE_COLUMNS
 from cc.templates import validate_template_name
-from cc.utils import ensure_parent, resolve_keyframe_path
+from cc.utils import ensure_parent, read_json, resolve_keyframe_path
 from cc.validation import evaluate_delivery_readiness
 
 
@@ -16,7 +16,7 @@ def cmd_export_md(args: "argparse.Namespace") -> int:  # noqa: F821
     if not cue_json.exists():
         raise FileNotFoundError(f"Cue JSON not found: {cue_json}")
 
-    payload = json.loads(cue_json.read_text(encoding="utf-8"))
+    payload = read_json(cue_json)
     template = args.template or payload.get("template") or "production"
     validate_template_name(template)
 

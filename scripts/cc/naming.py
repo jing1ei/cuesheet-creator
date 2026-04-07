@@ -13,7 +13,7 @@ from cc.constants import (
     NAMING_CATEGORY_FIELDS,
     NAMING_REPLACE_FIELDS,
 )
-from cc.utils import write_json
+from cc.utils import read_json, write_json
 
 # ---------------------------------------------------------------------------
 # Template-aware naming field detection
@@ -205,7 +205,7 @@ def cmd_derive_naming_tables(args: "argparse.Namespace") -> int:  # noqa: F821
     if not source_path.exists():
         raise FileNotFoundError(f"Source JSON not found: {source_path}")
 
-    source = json.loads(source_path.read_text(encoding="utf-8"))
+    source = read_json(source_path)
     rows = source.get("rows", [])
     template = source.get("template", "production")
 
@@ -313,7 +313,7 @@ def cmd_apply_naming(args: "argparse.Namespace") -> int:  # noqa: F821
     if not overrides_path.exists():
         raise FileNotFoundError(f"Naming overrides file not found: {overrides_path}")
 
-    overrides = json.loads(overrides_path.read_text(encoding="utf-8"))
+    overrides = read_json(overrides_path)
     all_mappings: dict[str, str] = {}
     for category in ("characters", "scenes", "props"):
         mappings = overrides.get(category, {})
@@ -336,7 +336,7 @@ def cmd_apply_naming(args: "argparse.Namespace") -> int:  # noqa: F821
         cue_path = Path(args.cue_json)
         if not cue_path.exists():
             raise FileNotFoundError(f"Cue JSON not found: {cue_path}")
-        payload = json.loads(cue_path.read_text(encoding="utf-8"))
+        payload = read_json(cue_path)
         new_payload, change_count = apply_naming_to_json_structured(payload, all_mappings)
         changes_detail.append({"file": str(cue_path), "type": "json", "field_changes": change_count})
         if change_count > 0:

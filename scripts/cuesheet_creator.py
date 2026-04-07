@@ -51,6 +51,7 @@ from cc.utils import (
     format_seconds,
     make_block_id,
     parse_fps,
+    read_json,
     relpath_for_markdown,
     resolve_keyframe_path,
     resolved_path,
@@ -221,6 +222,8 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--max-width", type=int, default=1280, help="Max keyframe export width")
     scan.add_argument("--asr", action="store_true", help="Enable ASR speech recognition (requires faster-whisper)")
     scan.add_argument("--asr-model", default="base", help="ASR model size: tiny / base / small / medium / large-v3")
+    scan.add_argument("--asr-device", default="auto", help="ASR device: auto / cpu / cuda (default: auto)")
+    scan.add_argument("--asr-compute-type", default="auto", help="ASR compute type: auto / int8 / float16 (default: auto)")
     scan.add_argument("--ocr", action="store_true", help="Enable OCR text detection (requires rapidocr / easyocr / paddleocr)")
     scan.add_argument("--start-time", default=None, help="Clip start time (HH:MM:SS.mmm, HH:MM:SS, MM:SS, or seconds)")
     scan.add_argument("--end-time", default=None, help="Clip end time")

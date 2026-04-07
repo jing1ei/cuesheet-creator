@@ -21,6 +21,19 @@ def write_json(path: Path, data: dict[str, Any]) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def read_json(path: Path) -> dict[str, Any]:
+    """Read a JSON file with BOM tolerance (utf-8-sig handles both BOM and plain UTF-8).
+
+    This is the preferred way to load JSON files in the project — it handles
+    Windows editors/tools that write UTF-8 BOM, PowerShell output, etc.
+    """
+    text = path.read_text(encoding="utf-8-sig")
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON in {path}: {exc}") from exc
+
+
 
 
 def format_seconds(seconds: float) -> str:

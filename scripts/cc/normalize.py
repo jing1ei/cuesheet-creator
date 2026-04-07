@@ -16,7 +16,7 @@ from cc.constants import (
     SHOT_SIZE_ENUM,
     TEMPLATE_COLUMNS,
 )
-from cc.utils import write_json
+from cc.utils import read_json, write_json
 
 
 def is_hint_only_value(value: str) -> bool:
@@ -100,7 +100,7 @@ def cmd_normalize_fill(args: "argparse.Namespace") -> int:  # noqa: F821
     if not source_path.exists():
         raise FileNotFoundError(f"Source JSON not found: {source_path}")
 
-    source = json.loads(source_path.read_text(encoding="utf-8"))
+    source = read_json(source_path)
     rows = source.get("rows", [])
     template = source.get("template", "production")
     fix_mode = bool(args.fix)
