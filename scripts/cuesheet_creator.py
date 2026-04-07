@@ -351,14 +351,10 @@ def get_required_fields(template: str) -> list[str]:
     return get_recommended_fields(template)
 
 
-def _ensure_templates_loaded() -> None:
-    """Lazy initializer: load templates on first access if not already loaded."""
-    if not TEMPLATE_COLUMNS:
-        load_templates()
-
 
 # Deferred: load_templates() will be called after SKILL_ROOT is defined.
-# See _init_templates() call below SKILL_ROOT definition.
+
+
 
 
 DEFAULT_COLUMN_WIDTHS = {
@@ -1735,50 +1731,51 @@ def cmd_scan_video(args: argparse.Namespace) -> int:
             times.append(round(max(effective_end - 0.001, 0.0), 3))
         notes.append(f"Too many sample points, downsampled with stride={stride}")
 
-    for idx, seconds in enumerate(times, start=1):
-        frame = read_frame_at(cv2, capture, seconds)
-        if frame is None:
-            notes.append(f"{format_seconds(seconds)} frame extraction failed, skipped")
-            continue
-        frame = resize_frame(cv2, frame, max_width=args.max_width)
-        image_name = f"frame_{idx:04d}_{int(seconds * 1000):010d}.jpg"
-        image_path = keyframe_dir / image_name
-        ok = cv2.imwrite(str(image_path), frame)
-        if not ok:
-            raise RuntimeError(f"Failed to write keyframe: {image_path}")
+    try:
+        for idx, seconds in enumerate(times, start=1):
+            frame = read_frame_at(cv2, capture, seconds)
+            if frame is None:
+                notes.append(f"{format_seconds(seconds)} frame extraction failed, skipped")
+                continue
+            frame = resize_frame(cv2, frame, max_width=args.max_width)
+            image_name = f"frame_{idx:04d}_{int(seconds * 1000):010d}.jpg"
+            image_path = keyframe_dir / image_name
+            ok = cv2.imwrite(str(image_path), frame)
+            if not ok:
+                raise RuntimeError(f"Failed to write keyframe: {image_path}")
 
-        sharpness = round(compute_frame_sharpness(cv2, frame), 2)
-        visual_features = compute_visual_features(cv2, np, frame)
-        score = 1.0 if prev_frame is None else round(compute_hist_distance(cv2, np, prev_frame, frame), 4)
-        frame_record = {
-            "index": idx,
-            "seconds": round(seconds, 3),
-            "timecode": format_seconds(seconds),
-            "image_path": str(image_path),
-            "score_from_previous": score,
-            "sharpness": sharpness,
-            "visual_features": visual_features,
-        }
-        sampled_frames.append(frame_record)
+            sharpness = round(compute_frame_sharpness(cv2, frame), 2)
+            visual_features = compute_visual_features(cv2, np, frame)
+            score = 1.0 if prev_frame is None else round(compute_hist_distance(cv2, np, prev_frame, frame), 4)
+            frame_record = {
+                "index": idx,
+                "seconds": round(seconds, 3),
+                "timecode": format_seconds(seconds),
+                "image_path": str(image_path),
+                "score_from_previous": score,
+                "sharpness": sharpness,
+                "visual_features": visual_features,
+            }
+            sampled_frames.append(frame_record)
 
-        # If using histogram fallback, build scene_candidates here
-        if detection_method == "histogram":
-            if prev_frame is None or score >= sd_threshold:
-                reason = "start" if prev_frame is None else f"hist_diff>={sd_threshold}"
-                scene_candidates.append(
-                    {
-                        "index": len(scene_candidates) + 1,
-                        "seconds": round(seconds, 3),
-                        "timecode": format_seconds(seconds),
-                        "image_path": str(image_path),
-                        "score": score,
-                        "reason": reason,
-                        "visual_features": visual_features,
-                    }
-                )
-        prev_frame = frame
-
-    capture.release()
+            # If using histogram fallback, build scene_candidates here
+            if detection_method == "histogram":
+                if prev_frame is None or score >= sd_threshold:
+                    reason = "start" if prev_frame is None else f"hist_diff>={sd_threshold}"
+                    scene_candidates.append(
+                        {
+                            "index": len(scene_candidates) + 1,
+                            "seconds": round(seconds, 3),
+                            "timecode": format_seconds(seconds),
+                            "image_path": str(image_path),
+                            "score": score,
+                            "reason": reason,
+                            "visual_features": visual_features,
+                        }
+                    )
+            prev_frame = frame
+    finally:
+        capture.release()
 
     # --- Assign best keyframe to scenedetect candidates ---
     if detection_method == "scenedetect":
@@ -2515,6 +2512,39 @@ def scale_dimensions(width: int, height: int, max_width: int, max_height: int) -
 
 
 # ---------------------------------------------------------------------------
+# Shared temp-marker coverage validation
+# ---------------------------------------------------------------------------
+
+def validate_temp_marker_coverage(row: dict[str, Any]) -> list[str]:
+    """Check that every temp: marker in naming fields has a matching entry in needs_confirmation.
+
+    Returns a list of gap descriptions (empty = all markers covered).
+    This is the single source of truth for temp-name consistency checks,
+    used by evaluate_delivery_readiness, validate-cue-json, and normalize-fill.
+    """
+    naming_fields = ("scene", "characters", "location")
+    needs_conf = str(row.get("needs_confirmation", "")).strip().lower()
+    label = row.get("shot_block", "?")
+    gaps: list[str] = []
+
+    for nf in naming_fields:
+        value = str(row.get(nf, ""))
+        markers = extract_temp_markers(value)
+        for marker in markers:
+            # Extract the name portion after "temp: " for matching
+            marker_key = marker.replace("temp:", "").strip().lower()
+            if not marker_key:
+                continue
+            # Check if this specific marker (or a recognizable fragment) is
+            # mentioned in needs_confirmation
+            if marker_key not in needs_conf:
+                gaps.append(
+                    f"{label}: '{marker}' in '{nf}' has no matching entry in needs_confirmation"
+                )
+    return gaps
+
+
+# ---------------------------------------------------------------------------
 # Unified delivery readiness evaluation
 # ---------------------------------------------------------------------------
 
@@ -2567,15 +2597,10 @@ def evaluate_delivery_readiness(
             if rec in expected_columns and not str(row.get(rec, "")).strip():
                 empty_recommended += 1
 
-        # temp: name consistency
-        naming_fields = ("scene", "characters", "location")
-        needs_conf = str(row.get("needs_confirmation", "")).strip()
-        for nf in naming_fields:
-            value = str(row.get(nf, ""))
-            if "temp:" in value.lower() and not needs_conf:
-                gap = f"{label}: '{nf}' contains temp name but needs_confirmation is empty"
-                temp_name_gaps.append(gap)
-                delivery_gaps.append(gap)
+        # temp: name consistency — per-marker coverage check
+        marker_gaps = validate_temp_marker_coverage(row)
+        temp_name_gaps.extend(marker_gaps)
+        delivery_gaps.extend(marker_gaps)
 
         # Keyframe existence
         if check_files and has_keyframe_col:
@@ -2648,6 +2673,7 @@ def cmd_build_xlsx(args: argparse.Namespace) -> int:
 
     # --- Keyframe embedding tracking ---
     embedded_keyframes = 0
+    missing_keyframes: list[str] = []
 
     for row_idx, item in enumerate(rows, start=2):
         for col_idx, column_name in enumerate(columns, start=1):
@@ -2694,20 +2720,21 @@ def cmd_build_xlsx(args: argparse.Namespace) -> int:
 
     output_path = Path(args.output)
     ensure_parent(output_path)
-    wb.save(output_path)
-
-    # Clean up temporary thumbnail files
-    if keyframe_col_index is not None:
-        for item in rows:
-            kf_value = item.get("keyframe")
-            kf_path = resolve_keyframe_path(base_dir, kf_value)
-            if kf_path:
-                thumb = kf_path.parent / f".thumb_{kf_path.name}"
-                if thumb.exists():
-                    try:
-                        thumb.unlink()
-                    except OSError as exc:
-                        print(f"WARNING: Could not remove temporary thumbnail {thumb}: {exc}", file=sys.stderr)
+    try:
+        wb.save(output_path)
+    finally:
+        # Clean up temporary thumbnail files even if save fails
+        if keyframe_col_index is not None:
+            for item in rows:
+                kf_value = item.get("keyframe")
+                kf_path = resolve_keyframe_path(base_dir, kf_value)
+                if kf_path:
+                    thumb = kf_path.parent / f".thumb_{kf_path.name}"
+                    if thumb.exists():
+                        try:
+                            thumb.unlink()
+                        except OSError:
+                            pass
 
     print(str(output_path))
 
@@ -2796,12 +2823,10 @@ def cmd_validate_cue_json(args: argparse.Namespace) -> int:
         if extra_keys:
             warnings.append(f"{label}: fields not defined in template '{template}': {', '.join(sorted(extra_keys))}.")
 
-        naming_fields = ("scene", "characters", "location")
-        needs_conf = str(row.get("needs_confirmation", "")).strip()
-        for nf in naming_fields:
-            value = str(row.get(nf, ""))
-            if "temp:" in value.lower() and not needs_conf:
-                warnings.append(f"{label}: '{nf}' contains temp name but needs_confirmation is empty.")
+        # temp: marker coverage — use shared per-marker validation
+        marker_gaps = validate_temp_marker_coverage(row)
+        for gap_msg in marker_gaps:
+            warnings.append(f"{gap_msg}.")
 
         # Per-template field completeness: required vs recommended
         for req_field in get_required_fields(template):
@@ -2826,7 +2851,7 @@ def cmd_validate_cue_json(args: argparse.Namespace) -> int:
                     warnings.append(f"{label}: keyframe file not found: {kf_path}")
 
     # Delivery readiness: required fields + temp-name consistency + keyframe existence
-    delivery_gaps = [w for w in warnings if "required field" in w or "temp name" in w.lower() or "needs_confirmation is empty" in w or "keyframe file not found" in w]
+    delivery_gaps = [w for w in warnings if "required field" in w or "no matching entry in needs_confirmation" in w or "keyframe file not found" in w]
     delivery_ready = len(errors) == 0 and len(delivery_gaps) == 0
 
     report = {
@@ -3380,22 +3405,15 @@ def cmd_normalize_fill(args: argparse.Namespace) -> int:
                 else:
                     issues.append({**fix_rec, "severity": "fixable"})
 
-        # 4. Check temp: markers vs needs_confirmation
-        needs_conf = str(row.get("needs_confirmation", "")).lower()
-        naming_fields = ("scene", "characters", "location")
-        for nf in naming_fields:
-            value = str(row.get(nf, ""))
-            markers = extract_temp_markers(value)
-            for marker in markers:
-                # Check if the marker (or a recognizable fragment) appears in needs_confirmation
-                marker_key = marker.replace("temp:", "").strip().lower()
-                if marker_key and marker_key not in needs_conf and "temp:" not in needs_conf:
-                    issues.append({
-                        "block": block_id, "field": nf,
-                        "type": "orphaned_temp_marker",
-                        "severity": "warning",
-                        "message": f"'{marker}' in '{nf}' has no matching entry in needs_confirmation",
-                    })
+        # 4. Check temp: markers vs needs_confirmation (shared logic)
+        marker_gaps = validate_temp_marker_coverage(row)
+        for gap_msg in marker_gaps:
+            issues.append({
+                "block": block_id, "field": "needs_confirmation",
+                "type": "orphaned_temp_marker",
+                "severity": "warning",
+                "message": gap_msg,
+            })
 
         # 5. Report empty required / recommended fields
         req_set = set(get_required_fields(template))
@@ -3855,16 +3873,26 @@ def _strategy_weight_multipliers(strategy: str) -> dict[str, float]:
 def compute_block_continuity(
     block_a: dict[str, Any],
     block_b: dict[str, Any],
-    sampled_frames: list[dict[str, Any]],
     asr_segments: list[dict[str, Any]],
     threshold: float = 0.65,
     strategy: str = "scene-cut",
 ) -> dict[str, Any]:
     """Compute a continuity score between two adjacent blocks.
-    Higher score = more likely candidates for merging."""
+    Higher score = more likely candidates for merging.
+
+    Scoring is a heuristic based on:
+    - Visual feature similarity (brightness, contrast, saturation, hue from block metadata)
+    - Cut boundary strength (candidate_score from scene detection)
+    - ASR dialogue continuity (speech spanning the block boundary)
+    - Short block detection (temporal proximity)
+
+    Strategy-based weight multipliers adjust signal importance per template.
+    This is NOT a frame-level histogram comparison — it uses pre-computed
+    per-block visual_features from scan-video.
+    """
     scores: dict[str, float] = {}
 
-    # 1. Visual similarity: histogram distance between keyframes via sampled_frames
+    # 1. Visual similarity from pre-computed block visual_features
     vf_a = block_a.get("visual_features") or {}
     vf_b = block_b.get("visual_features") or {}
     if vf_a and vf_b:
@@ -3939,7 +3967,6 @@ def cmd_suggest_merges(args: argparse.Namespace) -> int:
 
     analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
     draft_blocks = analysis.get("draft_blocks", [])
-    sampled_frames = analysis.get("sampled_frames", [])
     asr_segments = analysis.get("asr", {}).get("segments", [])
 
     if len(draft_blocks) < 2:
@@ -3972,7 +3999,7 @@ def cmd_suggest_merges(args: argparse.Namespace) -> int:
     pairs: list[dict[str, Any]] = []
     for i in range(len(draft_blocks) - 1):
         pair = compute_block_continuity(
-            draft_blocks[i], draft_blocks[i + 1], sampled_frames, asr_segments,
+            draft_blocks[i], draft_blocks[i + 1], asr_segments,
             threshold=threshold,
             strategy=strategy,
         )
@@ -4169,10 +4196,10 @@ def cmd_save_template(args: argparse.Namespace) -> int:
     # Validate (always — template integrity is non-negotiable)
     errors = validate_template_json(data)
     if errors:
-            print("=== Template validation FAILED ===", file=sys.stderr)
-            for e in errors:
-                print(f"  ✗ {e}", file=sys.stderr)
-            return 1
+        print("=== Template validation FAILED ===", file=sys.stderr)
+        for e in errors:
+            print(f"  ✗ {e}", file=sys.stderr)
+        return 1
 
     name = data.get("name", "")
     if not name:

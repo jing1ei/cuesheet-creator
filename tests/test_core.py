@@ -811,6 +811,72 @@ def test_build_xlsx_filled_rows_delivery_ready():
 
 
 # ---------------------------------------------------------------------------
+# 8b. build-xlsx: missing keyframe file must not crash (P0 regression test)
+# ---------------------------------------------------------------------------
+
+def test_build_xlsx_missing_keyframe_does_not_crash():
+    """build-xlsx with a missing keyframe file should succeed with warning, not NameError."""
+    import argparse
+    import io
+    import contextlib
+
+    try:
+        import openpyxl  # noqa: F401
+    except ImportError:
+        print("  SKIP (openpyxl not installed)")
+        return
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cue = {
+            "template": "production",
+            "video_title": "test",
+            "source_path": "",
+            "rows": [{
+                "shot_block": "A1",
+                "start_time": "00:00:00.000",
+                "end_time": "00:00:05.000",
+                "keyframe": "keyframes/nonexistent.jpg",
+                "shot_size": "WS",
+                "angle_or_lens": "front",
+                "motion": "static",
+                "scene": "Test",
+                "mood": "neutral",
+                "location": "studio",
+                "characters": "Actor",
+                "event": "Test event",
+                "important_dialogue": "",
+                "music_note": "none",
+                "director_note": "none",
+                "confidence": "high",
+                "needs_confirmation": "",
+            }],
+        }
+        cue_path = Path(tmpdir) / "cue.json"
+        cue_path.write_text(json.dumps(cue), encoding="utf-8")
+
+        out_path = Path(tmpdir) / "cue.xlsx"
+        args = argparse.Namespace(
+            cue_json=str(cue_path),
+            output=str(out_path),
+            base_dir=tmpdir,
+            template=None,
+            image_max_width=180,
+            image_max_height=100,
+        )
+
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            result = cc.cmd_build_xlsx(args)
+
+        assert result == 0, "build-xlsx should succeed even with missing keyframe"
+        assert out_path.exists(), "xlsx file should be created"
+        output_text = captured.getvalue()
+        assert "delivery_ready: NO" in output_text, (
+            f"Missing keyframe should make delivery_ready: NO, got: {output_text}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # 9. apply-naming: JSON and MD targets get consistent replacements
 # ---------------------------------------------------------------------------
 
@@ -1499,6 +1565,69 @@ def test_validate_required_field_in_delivery_gaps():
         assert len(recommended_gaps) == 0, (
             f"Recommended-only fields should NOT be in delivery_gaps: {report['delivery_gaps']}"
         )
+
+
+# ---------------------------------------------------------------------------
+# 15b. temp marker coverage: per-marker matching, not just empty check
+# ---------------------------------------------------------------------------
+
+def test_validate_temp_marker_requires_matching_needs_confirmation():
+    """A generic needs_confirmation that doesn't mention specific markers should still fail."""
+    gaps = cc.validate_temp_marker_coverage({
+        "shot_block": "A1",
+        "scene": "temp: Main Hall",
+        "characters": "temp: Girl-A",
+        "location": "",
+        "needs_confirmation": "check final naming later",
+    })
+    # "Main Hall" and "Girl-A" are NOT in "check final naming later"
+    assert len(gaps) >= 2, (
+        f"Expected at least 2 gaps for unmatched markers, got {len(gaps)}: {gaps}"
+    )
+
+
+def test_validate_temp_marker_passes_when_markers_mentioned():
+    """needs_confirmation that mentions the actual marker names should pass."""
+    gaps = cc.validate_temp_marker_coverage({
+        "shot_block": "A1",
+        "scene": "temp: Main Hall",
+        "characters": "temp: Girl-A",
+        "location": "",
+        "needs_confirmation": "Girl-A official name; Main Hall setup name",
+    })
+    assert len(gaps) == 0, (
+        f"Expected 0 gaps when markers are mentioned, got {len(gaps)}: {gaps}"
+    )
+
+
+def test_delivery_readiness_temp_marker_gap_blocks_export():
+    """delivery_ready should be False when temp markers exist but needs_confirmation is vague."""
+    rows = [{
+        "shot_block": "A1",
+        "start_time": "00:00:00.000",
+        "end_time": "00:00:05.000",
+        "keyframe": "",
+        "shot_size": "WS",
+        "angle_or_lens": "front",
+        "motion": "static",
+        "scene": "temp: Main Hall",
+        "mood": "calm",
+        "location": "interior",
+        "characters": "temp: Girl-A",
+        "event": "Test",
+        "important_dialogue": "",
+        "music_note": "",
+        "director_note": "",
+        "confidence": "high",
+        "needs_confirmation": "maybe something",
+    }]
+    result = cc.evaluate_delivery_readiness(rows, "production")
+    assert result["delivery_ready"] is False, (
+        f"delivery_ready should be False with unmatched temp markers, got: {result}"
+    )
+    assert len(result["temp_name_gaps"]) >= 2, (
+        f"Expected at least 2 temp_name_gaps, got: {result['temp_name_gaps']}"
+    )
 
 
 # ---------------------------------------------------------------------------
