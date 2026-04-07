@@ -45,6 +45,7 @@ Issues = "https://github.com/jing1ei/cuesheet-creator/issues"
 
 [tool.setuptools]
 py-modules = ["cuesheet_creator"]
+packages = ["cc", "cc.exporters"]
 
 [tool.setuptools.package-dir]
 "" = "scripts"
