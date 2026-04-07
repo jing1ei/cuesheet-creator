@@ -1,30 +1,142 @@
-"""Constants and configuration shared across modules."""
+"""Constants and configuration for cuesheet-creator."""
 from __future__ import annotations
 
-from cuesheet_creator import (
-    DEFAULT_COLUMN_WIDTHS,
-    LOCAL_FFMPEG_BIN_ENV,
-    LOCAL_FFMPEG_SEARCH_ROOT,
-    MOTION_ALIASES,
-    MOTION_ENUM,
-    NAMING_CATEGORY_FIELDS,
-    NAMING_REPLACE_FIELDS,
-    OPTIONAL_COMPONENTS,
-    PREPARE_ENV_MODES,
-    REQUIRED_PACKAGES,
-    SHOT_SIZE_ALIASES,
-    SHOT_SIZE_ENUM,
-    SKILL_ROOT,
-    SUPPORTED_OPTIONAL_GROUPS,
-    TEMPLATE_COLUMNS,
-    TEMPLATE_SCHEMA_VERSION,
-)
+from pathlib import Path
+from typing import Any
 
-__all__ = [
-    "REQUIRED_PACKAGES", "OPTIONAL_COMPONENTS", "TEMPLATE_COLUMNS",
-    "TEMPLATE_SCHEMA_VERSION", "DEFAULT_COLUMN_WIDTHS",
-    "SUPPORTED_OPTIONAL_GROUPS", "PREPARE_ENV_MODES",
-    "SKILL_ROOT", "LOCAL_FFMPEG_BIN_ENV", "LOCAL_FFMPEG_SEARCH_ROOT",
-    "NAMING_REPLACE_FIELDS", "NAMING_CATEGORY_FIELDS",
-    "SHOT_SIZE_ENUM", "SHOT_SIZE_ALIASES", "MOTION_ENUM", "MOTION_ALIASES",
-]
+__version__ = "1.4.1"
+
+REQUIRED_PACKAGES = {
+    "opencv-python-headless": "cv2",
+    "numpy": "numpy",
+    "Pillow": "PIL",
+    "openpyxl": "openpyxl",
+}
+
+OPTIONAL_COMPONENTS = {
+    "scene:scenedetect": {
+        "group": "scene",
+        "pip_name": "scenedetect[opencv]",
+        "pip_spec": "scenedetect[opencv]>=0.6,<1",
+        "import_name": "scenedetect",
+    },
+    "asr:faster-whisper": {
+        "group": "asr",
+        "pip_name": "faster-whisper",
+        "pip_spec": "faster-whisper>=1.0,<2",
+        "import_name": "faster_whisper",
+    },
+    "ocr:rapidocr": {
+        "group": "ocr",
+        "pip_name": "rapidocr-onnxruntime",
+        "pip_spec": "rapidocr-onnxruntime>=1.3,<2",
+        "import_name": "rapidocr_onnxruntime",
+    },
+    "ocr:easyocr": {
+        "group": "ocr-extra",
+        "pip_name": "easyocr",
+        "pip_spec": "easyocr>=1.7,<2",
+        "import_name": "easyocr",
+    },
+    "ocr:paddleocr": {
+        "group": "ocr-extra",
+        "pip_name": "paddleocr",
+        "pip_spec": "paddleocr>=2.7,<3",
+        "import_name": "paddleocr",
+    },
+}
+
+_BUILTIN_TEMPLATE_COLUMNS: dict[str, list[str]] = {
+    "script": [
+        "shot_block", "start_time", "end_time", "scene", "location",
+        "characters", "event", "important_dialogue", "confidence", "needs_confirmation",
+    ],
+    "production": [
+        "shot_block", "start_time", "end_time", "keyframe", "shot_size",
+        "angle_or_lens", "motion", "scene", "mood", "location", "characters",
+        "event", "important_dialogue", "music_note", "director_note",
+        "confidence", "needs_confirmation",
+    ],
+    "music-director": [
+        "shot_block", "start_time", "end_time", "mood", "event",
+        "important_dialogue", "music_note", "rhythm_change", "instrumentation",
+        "dynamics", "confidence", "needs_confirmation",
+    ],
+}
+
+# Template system runtime state
+_TEMPLATE_REGISTRY: dict[str, dict[str, Any]] = {}
+TEMPLATE_COLUMNS: dict[str, list[str]] = {}
+_BUILTIN_TEMPLATE_NAMES: set[str] = set()
+
+# Template schema
+_TEMPLATE_REQUIRED_FIELDS = {"name", "description", "perspective", "segmentation", "columns"}
+_TEMPLATE_REQUIRED_SEGMENTATION_FIELDS = {"strategy", "description", "split_triggers", "merge_bias", "keyframe_priority"}
+_TEMPLATE_REQUIRED_COLUMN_FIELDS = {"field", "label"}
+_STRUCTURAL_COLUMN_FIELDS = {"shot_block", "start_time", "end_time"}
+TEMPLATE_SCHEMA_VERSION = 2
+
+DEFAULT_COLUMN_WIDTHS = {
+    "shot_block": 12, "start_time": 14, "end_time": 14, "keyframe": 24,
+    "shot_size": 12, "angle_or_lens": 20, "motion": 18, "scene": 18,
+    "mood": 20, "location": 18, "characters": 20, "event": 28,
+    "important_dialogue": 30, "music_note": 28, "director_note": 28,
+    "confidence": 18, "needs_confirmation": 24, "rhythm_change": 20,
+    "instrumentation": 20, "dynamics": 18,
+}
+
+SUPPORTED_OPTIONAL_GROUPS = {"asr", "ocr", "ocr-extra", "scene"}
+
+PREPARE_ENV_MODES = {
+    "check-only": set(),
+    "install-required": set(),
+    "install-scene": {"scene"},
+    "install-asr": {"asr"},
+    "install-ocr": {"ocr"},
+    "install-all": set(SUPPORTED_OPTIONAL_GROUPS),
+}
+
+PREPARE_ENV_DEFAULT_FILES = {
+    "precheck": "selfcheck.pre.json",
+    "install_report": "install_report.json",
+    "postcheck": "selfcheck.post.json",
+    "report": "prepare_env.json",
+}
+
+# Skill root: two levels up from scripts/cc/constants.py -> repo root
+SKILL_ROOT = Path(__file__).resolve().parent.parent.parent
+LOCAL_FFMPEG_BIN_ENV = "CUESHEET_CREATOR_FFMPEG_BIN_DIR"
+LOCAL_FFMPEG_SEARCH_ROOT = SKILL_ROOT / "tools" / "ffmpeg"
+
+# Runtime overrides set by --ffmpeg-path / --ffprobe-path CLI args.
+_CLI_COMMAND_OVERRIDES: dict[str, str] = {}
+
+# Naming
+NAMING_REPLACE_FIELDS = {"scene", "characters", "location", "event", "important_dialogue", "needs_confirmation", "director_note", "music_note"}
+
+NAMING_CATEGORY_FIELDS: dict[str, list[str]] = {
+    "characters": ["characters"],
+    "scenes": ["scene", "location"],
+    "props": [],
+}
+
+# Normalize enums
+SHOT_SIZE_ENUM = {"WS", "MS", "CU", "EWS", "ECU"}
+SHOT_SIZE_ALIASES: dict[str, str] = {
+    "wide shot": "WS", "wide": "WS",
+    "medium shot": "MS", "medium": "MS", "mid": "MS", "mid shot": "MS",
+    "close-up": "CU", "close up": "CU", "closeup": "CU", "cu": "CU",
+    "extreme wide shot": "EWS", "extreme wide": "EWS",
+    "extreme close-up": "ECU", "extreme close up": "ECU", "extreme closeup": "ECU",
+    "ws": "WS", "ms": "MS", "ews": "EWS", "ecu": "ECU",
+}
+
+MOTION_ENUM = {"static", "push-in", "pull-out", "pan", "tracking", "handheld"}
+MOTION_ALIASES: dict[str, str] = {
+    "push in": "push-in", "pushin": "push-in",
+    "pull out": "pull-out", "pullout": "pull-out",
+    "track": "tracking", "dolly": "tracking",
+    "hand-held": "handheld", "hand held": "handheld",
+    "still": "static", "locked": "static", "fixed": "static",
+    "panning": "pan",
+}

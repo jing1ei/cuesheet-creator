@@ -1634,6 +1634,41 @@ def test_delivery_readiness_temp_marker_gap_blocks_export():
 
 
 # ---------------------------------------------------------------------------
+# 16. cc/ package independence tests
+# ---------------------------------------------------------------------------
+
+def test_cc_constants_independent():
+    """cc.constants should import without touching the monolith."""
+    from cc.constants import SKILL_ROOT, TEMPLATE_SCHEMA_VERSION, __version__
+    assert __version__ == "1.4.1"
+    assert TEMPLATE_SCHEMA_VERSION == 2
+    assert SKILL_ROOT.exists()
+
+
+def test_cc_utils_independent():
+    """cc.utils should import and work without the monolith."""
+    from cc.utils import format_seconds, seconds_from_timecode
+    assert format_seconds(83.456) == "00:01:23.456"
+    assert seconds_from_timecode("00:01:23.456") == 83.456
+
+
+def test_cc_modular_imports():
+    """All cc/ submodules should be importable."""
+    from cc.draft import cmd_draft_from_analysis  # noqa: F401
+    from cc.env import cmd_selfcheck  # noqa: F401
+    from cc.exporters.markdown import cmd_export_md  # noqa: F401
+    from cc.exporters.xlsx import cmd_build_xlsx  # noqa: F401
+    from cc.merge import compute_block_continuity  # noqa: F401
+    from cc.naming import extract_temp_markers  # noqa: F401
+    from cc.normalize import is_hint_only_value  # noqa: F401
+    from cc.scan import cmd_scan_video  # noqa: F401
+    from cc.skeleton import cmd_build_final_skeleton  # noqa: F401
+    from cc.template_mgmt import cmd_list_templates  # noqa: F401
+    from cc.templates import get_template_definition  # noqa: F401
+    from cc.validation import evaluate_delivery_readiness  # noqa: F401
+
+
+# ---------------------------------------------------------------------------
 # Runner (standalone, no pytest required)
 # ---------------------------------------------------------------------------
 
