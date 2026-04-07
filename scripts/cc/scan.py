@@ -1,23 +1,826 @@
 """Video analysis, keyframe extraction, ASR, OCR, motion estimation."""
 from __future__ import annotations
 
-from cuesheet_creator import (
-    build_draft_blocks,
-    build_video_info,
-    cmd_scan_video,
-    compute_frame_sharpness,
-    compute_hist_distance,
-    compute_visual_features,
-    detect_scenes_scenedetect,
-    estimate_motion_hint,
-    extract_audio_track,
-    ffprobe_metadata,
-    read_frame_at,
-    require_runtime_for_scan,
-    resize_frame,
-    run_asr_faster_whisper,
-    run_ocr_on_frames,
-    score_keyframe_candidates,
+import datetime as dt
+import importlib
+import json
+import math
+import os
+import sys
+from pathlib import Path
+from typing import Any
+
+from cc.constants import TEMPLATE_COLUMNS
+from cc.env import resolve_command_path
+from cc.utils import (
+    format_seconds,
+    make_block_id,
+    parse_fps,
+    run_command,
+    safe_float,
+    seconds_from_timecode,
+    truncate_text,
+    write_json,
 )
 
-__all__ = ['require_runtime_for_scan', 'ffprobe_metadata', 'build_video_info', 'compute_hist_distance', 'resize_frame', 'read_frame_at', 'build_draft_blocks', 'detect_scenes_scenedetect', 'extract_audio_track', 'run_asr_faster_whisper', 'run_ocr_on_frames', 'compute_frame_sharpness', 'compute_visual_features', 'estimate_motion_hint', 'score_keyframe_candidates', 'cmd_scan_video']
+# ---------------------------------------------------------------------------
+# Runtime requirements
+# ---------------------------------------------------------------------------
+
+def require_runtime_for_scan() -> tuple[Any, Any, Any]:
+    ffprobe_path, _ffprobe_source = resolve_command_path("ffprobe")
+    ffmpeg_path, _ffmpeg_source = resolve_command_path("ffmpeg")
+    missing = []
+    if not ffprobe_path:
+        missing.append("ffprobe")
+    if not ffmpeg_path:
+        missing.append("ffmpeg")
+    if missing:
+        raise RuntimeError("Missing command: " + ", ".join(missing))
+
+    missing_modules = []
+    modules: dict[str, Any] = {}
+    for import_name in ("cv2", "numpy", "PIL"):
+        try:
+            modules[import_name] = importlib.import_module(import_name)
+        except Exception:
+            missing_modules.append(import_name)
+    if missing_modules:
+        raise RuntimeError("Missing Python module: " + ", ".join(missing_modules))
+    return modules["cv2"], modules["numpy"], modules["PIL"]
+
+
+# ---------------------------------------------------------------------------
+# Video probing
+# ---------------------------------------------------------------------------
+
+def ffprobe_metadata(video_path: Path) -> dict[str, Any]:
+    ffprobe_path, _source = resolve_command_path("ffprobe")
+    if not ffprobe_path:
+        raise RuntimeError("Missing command: ffprobe")
+    command = [
+        ffprobe_path, "-v", "error", "-print_format", "json",
+        "-show_format", "-show_streams", str(video_path),
+    ]
+    completed = run_command(command)
+    if completed.returncode != 0:
+        raise RuntimeError(completed.stderr.strip() or "ffprobe read failed")
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"ffprobe output not parseable: {exc}") from exc
+
+
+def build_video_info(metadata: dict[str, Any]) -> dict[str, Any]:
+    streams = metadata.get("streams", [])
+    format_info = metadata.get("format", {})
+    video_stream = next((s for s in streams if s.get("codec_type") == "video"), {})
+    audio_streams = [s for s in streams if s.get("codec_type") == "audio"]
+
+    width = int(video_stream.get("width") or 0)
+    height = int(video_stream.get("height") or 0)
+    fps = parse_fps(video_stream.get("avg_frame_rate")) or parse_fps(video_stream.get("r_frame_rate"))
+    duration = safe_float(video_stream.get("duration"))
+    if duration is None:
+        duration = safe_float(format_info.get("duration"), 0.0) or 0.0
+
+    return {
+        "source_path": format_info.get("filename"),
+        "format_name": format_info.get("format_name"),
+        "duration_seconds": round(duration, 3),
+        "duration_timecode": format_seconds(duration),
+        "resolution": {"width": width, "height": height},
+        "fps": round(fps, 3) if fps else None,
+        "video_codec": video_stream.get("codec_name"),
+        "audio_tracks": len(audio_streams),
+        "audio_codecs": [s.get("codec_name") for s in audio_streams if s.get("codec_name")],
+        "bit_rate": safe_float(format_info.get("bit_rate")),
+        "size_bytes": safe_float(format_info.get("size")),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Frame-level helpers
+# ---------------------------------------------------------------------------
+
+def compute_hist_distance(cv2: Any, np: Any, frame_a: Any, frame_b: Any) -> float:
+    hist_a = []
+    hist_b = []
+    for channel in range(3):
+        h1 = cv2.calcHist([frame_a], [channel], None, [32], [0, 256])
+        h2 = cv2.calcHist([frame_b], [channel], None, [32], [0, 256])
+        cv2.normalize(h1, h1)
+        cv2.normalize(h2, h2)
+        hist_a.append(h1)
+        hist_b.append(h2)
+    distances = []
+    for h1, h2 in zip(hist_a, hist_b):
+        corr = cv2.compareHist(h1, h2, cv2.HISTCMP_CORREL)
+        distances.append(1.0 - max(min(corr, 1.0), -1.0))
+    score = float(np.mean(distances))
+    return max(score, 0.0)
+
+
+def resize_frame(cv2: Any, frame: Any, max_width: int) -> Any:
+    height, width = frame.shape[:2]
+    if width <= max_width:
+        return frame
+    scale = max_width / float(width)
+    new_size = (int(width * scale), int(height * scale))
+    return cv2.resize(frame, new_size)
+
+
+def read_frame_at(cv2: Any, capture: Any, seconds: float) -> Any | None:
+    capture.set(cv2.CAP_PROP_POS_MSEC, max(seconds, 0.0) * 1000.0)
+    success, frame = capture.read()
+    if not success:
+        return None
+    return frame
+
+
+# ---------------------------------------------------------------------------
+# Scene detection
+# ---------------------------------------------------------------------------
+
+def build_draft_blocks(scene_candidates: list[dict[str, Any]], duration: float) -> list[dict[str, Any]]:
+    ordered = sorted(scene_candidates, key=lambda item: item["seconds"])
+    deduped: list[dict[str, Any]] = []
+    last_seconds: float | None = None
+    for item in ordered:
+        seconds = float(item["seconds"])
+        if last_seconds is not None and abs(seconds - last_seconds) < 0.001:
+            continue
+        deduped.append(item)
+        last_seconds = seconds
+    if not deduped:
+        return []
+
+    blocks = []
+    for idx, item in enumerate(deduped, start=1):
+        start = float(item["seconds"])
+        end = duration if idx == len(deduped) else float(deduped[idx]["seconds"])
+        if end < start:
+            end = start
+        blocks.append({
+            "shot_block": make_block_id(idx),
+            "start_seconds": round(start, 3),
+            "start_time": format_seconds(start),
+            "end_seconds": round(end, 3),
+            "end_time": format_seconds(end),
+            "keyframe": item.get("image_path"),
+            "candidate_score": item.get("score"),
+            "cut_reason": item.get("reason"),
+            "visual_features": item.get("visual_features"),
+        })
+    return blocks
+
+
+def detect_scenes_scenedetect(video_path: Path, threshold: float) -> tuple[list[dict[str, Any]] | None, str | None]:
+    """Use PySceneDetect ContentDetector if available. Returns (candidates, error_message)."""
+    try:
+        from scenedetect import SceneManager, open_video
+        from scenedetect.detectors import ContentDetector
+    except ImportError:
+        return None, "scenedetect not installed"
+
+    try:
+        video = open_video(str(video_path))
+        manager = SceneManager()
+        manager.add_detector(ContentDetector(threshold=threshold))
+        manager.detect_scenes(video)
+        scene_list = manager.get_scene_list()
+
+        candidates: list[dict[str, Any]] = []
+        candidates.append({
+            "index": 1, "seconds": 0.0,
+            "timecode": format_seconds(0.0), "score": 1.0, "reason": "start",
+        })
+
+        for idx, (start_tc, _end_tc) in enumerate(scene_list, start=2):
+            seconds = start_tc.get_seconds()
+            if seconds <= 0.001:
+                continue
+            candidates.append({
+                "index": idx, "seconds": round(seconds, 3),
+                "timecode": format_seconds(seconds), "score": 1.0,
+                "reason": f"scenedetect_content>={threshold}",
+            })
+
+        return candidates, None
+    except Exception as exc:
+        return None, f"SceneDetect runtime error: {exc}"
+
+
+# ---------------------------------------------------------------------------
+# Audio / ASR
+# ---------------------------------------------------------------------------
+
+def extract_audio_track(video_path: Path, out_dir: Path, start: float | None = None, end: float | None = None) -> tuple[Path | None, str | None]:
+    """Extract first audio track to WAV using ffmpeg."""
+    ffmpeg_path, _source = resolve_command_path("ffmpeg")
+    if not ffmpeg_path:
+        return None, "Missing command: ffmpeg"
+    audio_path = out_dir / "audio.wav"
+    cmd = [ffmpeg_path, "-y"]
+    if start is not None and start > 0.001:
+        cmd.extend(["-ss", format_seconds(start)])
+    cmd.extend(["-i", str(video_path)])
+    if end is not None:
+        duration = end - (start or 0.0)
+        if duration > 0:
+            cmd.extend(["-t", f"{duration:.3f}"])
+    cmd.extend(["-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", str(audio_path)])
+    result = run_command(cmd)
+    if result.returncode != 0:
+        stderr_summary = truncate_text(result.stderr, limit=500)
+        return None, f"ffmpeg audio extraction failed (rc={result.returncode}): {stderr_summary}"
+    if not audio_path.exists():
+        return None, "ffmpeg completed but audio.wav was not created"
+    return audio_path, None
+
+
+def run_asr_faster_whisper(audio_path: Path, model_size: str = "base") -> tuple[list[dict[str, Any]] | None, str | None]:
+    """Run faster-whisper ASR."""
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError:
+        return None, "faster-whisper not installed"
+
+    try:
+        model = WhisperModel(model_size, device="cpu", compute_type="int8")
+        segments_iter, _info = model.transcribe(str(audio_path), beam_size=5)
+        results: list[dict[str, Any]] = []
+        for segment in segments_iter:
+            results.append({
+                "start": round(segment.start, 3),
+                "end": round(segment.end, 3),
+                "start_time": format_seconds(segment.start),
+                "end_time": format_seconds(segment.end),
+                "text": segment.text.strip(),
+            })
+        return results, None
+    except Exception as exc:
+        return None, f"ASR runtime error: {exc}"
+
+
+# ---------------------------------------------------------------------------
+# OCR
+# ---------------------------------------------------------------------------
+
+def run_ocr_on_frames(frame_paths: list[str]) -> tuple[list[dict[str, Any]] | None, str | None]:
+    """Run OCR on selected keyframes. Tries rapidocr > easyocr > paddleocr."""
+    ocr_engine = None
+    engine_name = None
+    init_notes: list[str] = []
+
+    try:
+        from rapidocr_onnxruntime import RapidOCR
+        ocr_engine = RapidOCR()
+        engine_name = "rapidocr"
+    except Exception as exc:
+        init_notes.append(f"rapidocr init failed: {exc}")
+
+    if ocr_engine is None:
+        try:
+            import easyocr
+            reader = easyocr.Reader(["ch_sim", "en"], gpu=False)
+            ocr_engine = reader
+            engine_name = "easyocr"
+        except Exception as exc:
+            init_notes.append(f"easyocr init failed: {exc}")
+
+    if ocr_engine is None:
+        try:
+            from paddleocr import PaddleOCR
+            ocr_engine = PaddleOCR(use_angle_cls=True, lang="ch", show_log=False)
+            engine_name = "paddleocr"
+        except Exception as exc:
+            init_notes.append(f"paddleocr init failed: {exc}")
+
+    if ocr_engine is None:
+        detail = "; ".join(init_notes) if init_notes else "no engines installed"
+        return None, f"No OCR engine available ({detail})"
+
+    results: list[dict[str, Any]] = []
+    frame_errors: list[str] = []
+    for frame_path in frame_paths:
+        texts: list[str] = []
+        try:
+            if engine_name == "rapidocr":
+                result, _elapse = ocr_engine(frame_path)
+                if result:
+                    texts = [item[1] for item in result if item[1]]
+            elif engine_name == "easyocr":
+                raw = ocr_engine.readtext(frame_path)
+                texts = [item[1] for item in raw if item[1]]
+            elif engine_name == "paddleocr":
+                result = ocr_engine.ocr(frame_path, cls=True)
+                if result and result[0]:
+                    texts = [line[1][0] for line in result[0] if line[1] and line[1][0]]
+        except Exception as exc:
+            frame_errors.append(f"{Path(frame_path).name}: {exc}")
+            continue
+
+        if texts:
+            results.append({"frame": frame_path, "texts": texts, "engine": engine_name})
+    if frame_errors:
+        error_summary = f"OCR failed on {len(frame_errors)} frame(s): {'; '.join(frame_errors[:5])}"
+        if len(frame_errors) > 5:
+            error_summary += f" ... and {len(frame_errors) - 5} more"
+        return (results, error_summary)
+    return (results, None) if results else ([], None)
+
+
+# ---------------------------------------------------------------------------
+# Visual analysis
+# ---------------------------------------------------------------------------
+
+def compute_frame_sharpness(cv2: Any, frame: Any) -> float:
+    """Compute Laplacian variance as a sharpness score."""
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+
+
+def compute_visual_features(cv2: Any, np: Any, frame: Any) -> dict[str, Any]:
+    """Compute objective visual features from a single frame."""
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    brightness = float(np.mean(gray))
+    contrast = float(np.std(gray))
+    saturation = float(np.mean(hsv[:, :, 1]))
+    dominant_hue = float(np.mean(hsv[:, :, 0]))
+    if brightness < 80:
+        tone = "dark"
+    elif brightness > 170:
+        tone = "bright"
+    else:
+        tone = "mid"
+    if 10 < dominant_hue < 30:
+        color_temp = "warm"
+    elif 90 < dominant_hue < 130:
+        color_temp = "cool"
+    else:
+        color_temp = "neutral"
+    return {
+        "brightness": round(brightness, 1), "contrast": round(contrast, 1),
+        "saturation": round(saturation, 1), "dominant_hue": round(dominant_hue, 1),
+        "tone": tone, "color_temp": color_temp,
+    }
+
+
+def estimate_motion_hint(
+    cv2: Any, np: Any, capture: Any,
+    block_start: float, block_end: float,
+    num_samples: int = 4,
+    static_threshold: float = 2.0,
+) -> dict[str, Any]:
+    """Estimate camera motion for a block using phase correlation."""
+    duration = block_end - block_start
+    if duration < 0.2 or num_samples < 2:
+        return {"motion_hint": "uncertain", "motion_confidence": 0.0,
+                "avg_displacement": 0.0, "max_displacement": 0.0}
+
+    step = duration / (num_samples - 1) if num_samples > 1 else duration
+    times = [block_start + i * step for i in range(num_samples)]
+
+    frames_gray: list[Any] = []
+    for t in times:
+        capture.set(cv2.CAP_PROP_POS_MSEC, max(t, 0.0) * 1000.0)
+        ok, frame = capture.read()
+        if not ok or frame is None:
+            continue
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        h, w = gray.shape[:2]
+        if w > 320:
+            scale = 320.0 / w
+            gray = cv2.resize(gray, (320, int(h * scale)))
+        frames_gray.append(np.float32(gray))
+
+    if len(frames_gray) < 2:
+        return {"motion_hint": "uncertain", "motion_confidence": 0.0,
+                "avg_displacement": 0.0, "max_displacement": 0.0}
+
+    displacements: list[float] = []
+    for i in range(len(frames_gray) - 1):
+        (dx, dy), _response = cv2.phaseCorrelate(frames_gray[i], frames_gray[i + 1])
+        disp = math.sqrt(dx * dx + dy * dy)
+        displacements.append(disp)
+
+    avg_disp = sum(displacements) / len(displacements) if displacements else 0.0
+    max_disp = max(displacements) if displacements else 0.0
+
+    if avg_disp < static_threshold and max_disp < static_threshold * 2:
+        hint = "likely-static"
+        confidence = min(1.0, (static_threshold - avg_disp) / static_threshold)
+    elif avg_disp > static_threshold * 3:
+        hint = "likely-camera-move"
+        confidence = min(1.0, avg_disp / (static_threshold * 6))
+    else:
+        hint = "uncertain"
+        confidence = 0.3
+
+    return {
+        "motion_hint": hint, "motion_confidence": round(confidence, 2),
+        "avg_displacement": round(avg_disp, 2), "max_displacement": round(max_disp, 2),
+    }
+
+
+def score_keyframe_candidates(
+    cv2: Any,
+    frames: list[tuple[float, Any, str]],
+) -> list[dict[str, Any]]:
+    """Score candidate frames by sharpness. Returns sorted list (best first)."""
+    scored: list[dict[str, Any]] = []
+    for seconds, frame, image_path in frames:
+        sharpness = compute_frame_sharpness(cv2, frame)
+        scored.append({"seconds": seconds, "image_path": image_path, "sharpness": round(sharpness, 2)})
+    scored.sort(key=lambda x: x["sharpness"], reverse=True)
+    return scored
+
+
+# ---------------------------------------------------------------------------
+# Main scan command
+# ---------------------------------------------------------------------------
+
+def cmd_scan_video(args: "argparse.Namespace") -> int:  # noqa: F821, C901
+    cv2, np, _pil = require_runtime_for_scan()
+
+    video_path = Path(args.video)
+    if not video_path.exists() or not video_path.is_file():
+        raise FileNotFoundError(f"Video not found: {video_path}")
+
+    if args.out_dir:
+        out_dir = Path(args.out_dir)
+    else:
+        out_dir = video_path.parent / f"{video_path.stem}_cuesheet"
+
+    keyframe_dir = out_dir / "keyframes"
+    keyframe_dir.mkdir(parents=True, exist_ok=True)
+
+    probe = ffprobe_metadata(video_path)
+    video_info = build_video_info(probe)
+
+    capture = cv2.VideoCapture(str(video_path))
+    if not capture.isOpened():
+        raise RuntimeError("OpenCV cannot open video")
+
+    fps = video_info.get("fps") or capture.get(cv2.CAP_PROP_FPS) or 0.0
+    frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    duration = video_info.get("duration_seconds") or 0.0
+    if (not duration or duration <= 0) and fps and frame_count:
+        duration = frame_count / float(fps)
+        video_info["duration_seconds"] = round(duration, 3)
+        video_info["duration_timecode"] = format_seconds(duration)
+    video_info["frame_count"] = frame_count
+
+    if duration <= 0:
+        raise RuntimeError("Cannot determine video duration")
+
+    effective_start = 0.0
+    effective_end = duration
+    if args.start_time:
+        effective_start = seconds_from_timecode(args.start_time)
+    if args.end_time:
+        effective_end = seconds_from_timecode(args.end_time)
+    effective_start = max(0.0, min(effective_start, duration))
+    effective_end = max(effective_start, min(effective_end, duration))
+    effective_duration = effective_end - effective_start
+    if effective_duration <= 0:
+        raise RuntimeError(f"Effective clip range is zero: {format_seconds(effective_start)} - {format_seconds(effective_end)}")
+
+    sample_interval = max(float(args.sample_interval), 0.2)
+    max_samples = int(args.max_samples) if args.max_samples else None
+
+    sampled_frames: list[dict[str, Any]] = []
+    scene_candidates: list[dict[str, Any]] = []
+    notes: list[str] = []
+    detection_method = "histogram"
+
+    sd_threshold = float(args.scene_threshold)
+    sd_content_threshold = float(args.content_threshold) if hasattr(args, "content_threshold") and args.content_threshold else 27.0
+
+    sd_candidates, sd_err = detect_scenes_scenedetect(video_path, sd_content_threshold)
+    if sd_candidates is not None:
+        detection_method = "scenedetect"
+        filtered = [
+            c for c in sd_candidates
+            if c["seconds"] >= effective_start - 0.05 and c["seconds"] <= effective_end + 0.05
+        ]
+        if not filtered or filtered[0]["seconds"] > effective_start + 0.1:
+            filtered.insert(0, {
+                "index": 1, "seconds": round(effective_start, 3),
+                "timecode": format_seconds(effective_start), "score": 1.0, "reason": "start",
+            })
+        for i, c in enumerate(filtered, start=1):
+            c["index"] = i
+        scene_candidates = filtered
+        notes.append(f"Using PySceneDetect ContentDetector (threshold={sd_content_threshold})")
+    else:
+        notes.append(f"PySceneDetect unavailable ({sd_err}), falling back to histogram-based cut detection")
+        notes.append("TIP: For better scene detection (especially dissolves/fades), install scenedetect: python scripts/cuesheet_creator.py prepare-env --mode install-scene --out-dir <out-dir>")
+
+    prev_frame = None
+    times: list[float] = []
+    current = effective_start
+    while current < effective_end:
+        times.append(round(current, 3))
+        current += sample_interval
+    if not times or abs(times[-1] - effective_end) > 0.05:
+        times.append(round(max(effective_end - 0.001, 0.0), 3))
+
+    if max_samples and len(times) > max_samples:
+        stride = math.ceil(len(times) / max_samples)
+        times = times[::stride]
+        if times[-1] < effective_end - 0.05:
+            times.append(round(max(effective_end - 0.001, 0.0), 3))
+        notes.append(f"Too many sample points, downsampled with stride={stride}")
+
+    try:
+        for idx, seconds in enumerate(times, start=1):
+            frame = read_frame_at(cv2, capture, seconds)
+            if frame is None:
+                notes.append(f"{format_seconds(seconds)} frame extraction failed, skipped")
+                continue
+            frame = resize_frame(cv2, frame, max_width=args.max_width)
+            image_name = f"frame_{idx:04d}_{int(seconds * 1000):010d}.jpg"
+            image_path = keyframe_dir / image_name
+            ok = cv2.imwrite(str(image_path), frame)
+            if not ok:
+                raise RuntimeError(f"Failed to write keyframe: {image_path}")
+
+            sharpness = round(compute_frame_sharpness(cv2, frame), 2)
+            visual_features = compute_visual_features(cv2, np, frame)
+            score = 1.0 if prev_frame is None else round(compute_hist_distance(cv2, np, prev_frame, frame), 4)
+            frame_record = {
+                "index": idx, "seconds": round(seconds, 3),
+                "timecode": format_seconds(seconds),
+                "image_path": os.path.relpath(str(image_path), str(out_dir)).replace("\\", "/"),
+                "score_from_previous": score, "sharpness": sharpness,
+                "visual_features": visual_features,
+            }
+            sampled_frames.append(frame_record)
+
+            if detection_method == "histogram":
+                if prev_frame is None or score >= sd_threshold:
+                    reason = "start" if prev_frame is None else f"hist_diff>={sd_threshold}"
+                    scene_candidates.append({
+                        "index": len(scene_candidates) + 1,
+                        "seconds": round(seconds, 3),
+                        "timecode": format_seconds(seconds),
+                        "image_path": os.path.relpath(str(image_path), str(out_dir)).replace("\\", "/"),
+                        "score": score, "reason": reason,
+                        "visual_features": visual_features,
+                    })
+            prev_frame = frame
+    finally:
+        capture.release()
+
+    if detection_method == "scenedetect":
+        for candidate in scene_candidates:
+            cs = candidate["seconds"]
+            best_frame = None
+            best_sharpness = -1.0
+            for sf in sampled_frames:
+                if sf["seconds"] >= cs and sf["seconds"] < cs + sample_interval * 3:
+                    if sf["sharpness"] > best_sharpness:
+                        best_sharpness = sf["sharpness"]
+                        best_frame = sf
+            if best_frame is None and sampled_frames:
+                closest = min(sampled_frames, key=lambda sf: abs(sf["seconds"] - cs))
+                best_frame = closest
+                notes.append(
+                    f"Keyframe fallback for candidate at {format_seconds(cs)}: "
+                    f"no frame in primary window, using closest frame at "
+                    f"{format_seconds(closest['seconds'])} "
+                    f"(distance={abs(closest['seconds'] - cs):.3f}s)"
+                )
+            if best_frame:
+                candidate["image_path"] = best_frame["image_path"]
+                candidate["sharpness"] = best_frame.get("sharpness", 0.0)
+                candidate["visual_features"] = best_frame.get("visual_features")
+
+    if len(scene_candidates) <= 1:
+        notes.append("Very few scene candidates detected; consider manual merging or denser sampling in draft phase")
+
+    draft_blocks = build_draft_blocks(scene_candidates, float(effective_end))
+
+    if not draft_blocks:
+        notes.append("ERROR: No draft blocks generated. Scene detection may have failed or video is too short.")
+        print("ERROR: No draft blocks could be generated from this video. "
+              "Check scene detection settings or try a different --sample-interval.", file=sys.stderr)
+
+    if draft_blocks:
+        motion_capture = cv2.VideoCapture(str(video_path))
+        try:
+            if motion_capture.isOpened():
+                for block in draft_blocks:
+                    hint = estimate_motion_hint(
+                        cv2, np, motion_capture,
+                        block["start_seconds"], block["end_seconds"],
+                    )
+                    block["motion_hint"] = hint
+        finally:
+            motion_capture.release()
+
+    # --- ASR ---
+    asr_result: dict[str, Any] = {"status": "not-run", "segments": []}
+    if args.asr:
+        notes.append("Attempting ASR speech recognition...")
+        audio_path, audio_err = extract_audio_track(video_path, out_dir, start=effective_start, end=effective_end)
+        if audio_path:
+            asr_model = args.asr_model if hasattr(args, "asr_model") and args.asr_model else "base"
+            segments, asr_err = run_asr_faster_whisper(audio_path, model_size=asr_model)
+            if segments is not None:
+                if effective_start > 0.001:
+                    for seg in segments:
+                        seg["start"] = round(seg["start"] + effective_start, 3)
+                        seg["end"] = round(seg["end"] + effective_start, 3)
+                        seg["start_time"] = format_seconds(seg["start"])
+                        seg["end_time"] = format_seconds(seg["end"])
+                asr_result = {"status": "ok", "model": asr_model, "segments": segments}
+                notes.append(f"ASR complete, recognized {len(segments)} speech segments (model={asr_model})")
+            elif asr_err and "not installed" in asr_err:
+                asr_result = {"status": "unavailable", "segments": [], "error": asr_err}
+                notes.append(f"faster-whisper unavailable, ASR skipped: {asr_err}")
+            else:
+                asr_result = {"status": "runtime-failed", "segments": [], "error": asr_err or "unknown"}
+                notes.append(f"ASR runtime failed (continuing without speech data): {asr_err}")
+        else:
+            asr_result = {"status": "no-audio", "segments": [], "error": audio_err or "unknown"}
+            notes.append(f"Cannot extract audio track, ASR skipped: {audio_err}")
+
+    # --- OCR ---
+    ocr_result: dict[str, Any] = {"status": "not-run", "detections": []}
+    if args.ocr:
+        notes.append("Attempting OCR text recognition...")
+        ocr_frame_paths = []
+        for candidate in scene_candidates:
+            ip = candidate.get("image_path")
+            if ip:
+                abs_ip = (out_dir / ip).resolve()
+                if abs_ip.exists():
+                    ocr_frame_paths.append(str(abs_ip))
+        if ocr_frame_paths:
+            detections, ocr_err = run_ocr_on_frames(ocr_frame_paths)
+            if ocr_err is not None:
+                if "No OCR engine" in ocr_err:
+                    ocr_result = {"status": "unavailable", "detections": [], "error": ocr_err}
+                    notes.append(f"OCR engine unavailable, skipped: {ocr_err}")
+                elif detections:
+                    ocr_result = {"status": "partial-ok", "detections": detections, "error": ocr_err}
+                    notes.append(f"OCR partial: text detected in {len(detections)} frame(s), but {ocr_err}")
+                else:
+                    ocr_result = {"status": "runtime-failed", "detections": [], "error": ocr_err}
+                    notes.append(f"OCR runtime failed (continuing without text data): {ocr_err}")
+            elif detections is not None and len(detections) > 0:
+                ocr_result = {"status": "ok", "detections": detections}
+                notes.append(f"OCR complete, text detected in {len(detections)} frames")
+            else:
+                ocr_result = {"status": "ok-no-text", "detections": []}
+                notes.append("OCR completed successfully but no on-screen text was detected")
+        else:
+            ocr_result = {"status": "no-frames", "detections": []}
+            notes.append("No keyframes available for OCR")
+
+    # --- agent_summary ---
+    KEYFRAME_BATCH_SIZE = 6
+    block_overview: list[dict[str, Any]] = []
+    all_keyframe_paths: list[str] = []
+    for block in draft_blocks:
+        kf = block.get("keyframe")
+        kf_rel = ""
+        if kf:
+            kf_rel = kf.replace("\\", "/") if isinstance(kf, str) else ""
+            all_keyframe_paths.append(kf_rel)
+        block_overview.append({
+            "id": block["shot_block"], "start": block["start_time"],
+            "end": block["end_time"], "keyframe": kf_rel,
+            "cut_reason": block.get("cut_reason", ""),
+            "visual_features": block.get("visual_features"),
+            "motion_hint": block.get("motion_hint"),
+        })
+
+    keyframe_batches: list[list[str]] = []
+    for i in range(0, len(all_keyframe_paths), KEYFRAME_BATCH_SIZE):
+        keyframe_batches.append(all_keyframe_paths[i:i + KEYFRAME_BATCH_SIZE])
+
+    asr_compact: list[dict[str, str]] = []
+    for seg in asr_result.get("segments", [])[:20]:
+        asr_compact.append({
+            "time": f"{seg.get('start_time', '')} - {seg.get('end_time', '')}",
+            "text": seg.get("text", "")[:120],
+        })
+
+    ocr_compact: list[dict[str, Any]] = []
+    for det in ocr_result.get("detections", [])[:15]:
+        ocr_compact.append({
+            "frame": Path(det.get("frame", "")).name,
+            "texts": det.get("texts", [])[:5],
+        })
+
+    agent_summary = {
+        "_purpose": "Compact overview for LLM fill-in. Read THIS instead of the full analysis.json.",
+        "video_duration": video_info.get("duration_timecode", ""),
+        "video_resolution": f"{video_info.get('resolution', {}).get('width', '')}x{video_info.get('resolution', {}).get('height', '')}",
+        "total_blocks": len(draft_blocks),
+        "detection_method": detection_method,
+        "blocks": block_overview,
+        "keyframe_batches": keyframe_batches,
+        "asr_status": asr_result["status"],
+        "asr_segments": asr_compact,
+        "ocr_status": ocr_result["status"],
+        "ocr_detections": ocr_compact,
+        "degradation_notes": [n for n in notes if "unavailable" in n.lower() or "failed" in n.lower() or "degraded" in n.lower() or "fallback" in n.lower()],
+    }
+
+    analysis = {
+        "generated_at": dt.datetime.now().isoformat(timespec="seconds"),
+        "video": video_info,
+        "agent_summary": agent_summary,
+        "analysis_config": {
+            "sample_interval_sec": sample_interval,
+            "scene_threshold": sd_threshold,
+            "content_threshold": sd_content_threshold,
+            "detection_method": detection_method,
+            "max_samples": max_samples,
+            "max_width": int(args.max_width),
+            "asr_enabled": bool(args.asr),
+            "ocr_enabled": bool(args.ocr),
+            "effective_range": {
+                "start": round(effective_start, 3),
+                "start_time": format_seconds(effective_start),
+                "end": round(effective_end, 3),
+                "end_time": format_seconds(effective_end),
+                "is_clip": effective_start > 0.001 or effective_end < duration - 0.001,
+            },
+        },
+        "scene_candidates": scene_candidates,
+        "sampled_frames": sampled_frames,
+        "draft_blocks": draft_blocks,
+        "asr": asr_result,
+        "ocr": ocr_result,
+        "notes": notes,
+        "degradation": {
+            "asr": asr_result["status"],
+            "ocr": ocr_result["status"],
+            "scene_detection": detection_method,
+        },
+    }
+
+    analysis_path = out_dir / "analysis.json"
+    write_json(analysis_path, analysis)
+
+    generated_files = [str(analysis_path), str(keyframe_dir)]
+    if asr_result.get("status") == "ok":
+        generated_files.append(str(out_dir / "audio.wav"))
+
+    summary: dict[str, Any] = {
+        "status": "ok",
+        "stage": "scan-video",
+        "output_directory": str(out_dir),
+        "generated": generated_files,
+        "keyframe_count": len(sampled_frames),
+        "scene_candidates": len(scene_candidates),
+        "draft_blocks": len(draft_blocks),
+        "detection_method": detection_method,
+        "warnings": [n for n in notes if "unavailable" in n.lower() or "failed" in n.lower() or "degraded" in n.lower() or "skipped" in n.lower()],
+        "notes": notes,
+        "degradation": analysis["degradation"],
+        "next_recommended_step": f"draft-from-analysis --analysis-json {analysis_path} --output {out_dir / 'cue_sheet.md'} --template <TEMPLATE>",
+        "available_templates": sorted(TEMPLATE_COLUMNS.keys()),
+    }
+
+    if args.output_format == "json":
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+    else:
+        print(f"Output directory: {out_dir}")
+        print(f"  analysis.json : {analysis_path}")
+        print(f"  keyframes/    : {keyframe_dir} ({len(sampled_frames)} frames)")
+        if asr_result.get("status") == "ok":
+            print(f"  audio.wav     : {out_dir / 'audio.wav'}")
+        if summary["warnings"]:
+            for w in summary["warnings"]:
+                print(f"  WARNING: {w}")
+        print("Next step: draft-from-analysis")
+
+    return 0
+
+
+__all__ = [
+    "require_runtime_for_scan",
+    "ffprobe_metadata",
+    "build_video_info",
+    "compute_hist_distance",
+    "resize_frame",
+    "read_frame_at",
+    "build_draft_blocks",
+    "detect_scenes_scenedetect",
+    "extract_audio_track",
+    "run_asr_faster_whisper",
+    "run_ocr_on_frames",
+    "compute_frame_sharpness",
+    "compute_visual_features",
+    "estimate_motion_hint",
+    "score_keyframe_candidates",
+    "cmd_scan_video",
+]

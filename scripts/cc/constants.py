@@ -1,6 +1,7 @@
 """Constants and configuration for cuesheet-creator."""
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -140,3 +141,21 @@ MOTION_ALIASES: dict[str, str] = {
     "still": "static", "locked": "static", "fixed": "static",
     "panning": "pan",
 }
+
+# ---------------------------------------------------------------------------
+# Compiled regex patterns (shared across modules)
+# ---------------------------------------------------------------------------
+
+# Regex for temp: markers.  Matches "temp: Girl-A", "temp: Dr. Smith",
+# "temp: O'Brien", CJK names, etc.  Stops at punctuation that signals
+# the start of a verb phrase (avoids "temp: Girl-A enters" false positive).
+_TEMP_MARKER_RE = re.compile(
+    r"temp:\s*[A-Za-z0-9\u4e00-\u9fff]"           # must start with alnum / CJK
+    r"[\w\u4e00-\u9fff.'\-]*"                       # word chars, dots, apostrophes, hyphens
+    r"(?:\s+[A-Z\u4e00-\u9fff][\w\u4e00-\u9fff.'\-]*)*",  # additional capitalized / CJK words
+    re.UNICODE,
+)
+
+_VISUAL_HINT_RE = re.compile(r"\[visual:\s*[^\]]*\]\s*")
+_OCR_HINT_RE = re.compile(r"\[OCR detected:\s*[^\]]*\]\s*")
+_MOTION_HINT_RE = re.compile(r"\[motion-hint:\s*[^\]]*\]\s*")
