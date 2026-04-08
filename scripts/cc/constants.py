@@ -175,14 +175,15 @@ MOTION_ALIASES: dict[str, str] = {
 # Compiled regex patterns (shared across modules)
 # ---------------------------------------------------------------------------
 
-# Regex for temp: markers.  Matches "temp: Girl-A", "temp: Dr. Smith",
-# "temp: O'Brien", CJK names, etc.  Stops at punctuation that signals
-# the start of a verb phrase (avoids "temp: Girl-A enters" false positive).
+# Regex for temp: markers.  Matches "temp: Girl-A", "Temp: Dr. Smith",
+# "TEMP: O'Brien", CJK names, etc.  Case-insensitive prefix.
+# Stops at punctuation that signals the start of a verb phrase
+# (avoids "temp: Girl-A enters" false positive).
 _TEMP_MARKER_RE = re.compile(
     r"temp:\s*[A-Za-z0-9\u4e00-\u9fff]"           # must start with alnum / CJK
     r"[\w\u4e00-\u9fff.'\-]*"                       # word chars, dots, apostrophes, hyphens
     r"(?:\s+[A-Z\u4e00-\u9fff][\w\u4e00-\u9fff.'\-]*)*",  # additional capitalized / CJK words
-    re.UNICODE,
+    re.UNICODE | re.IGNORECASE,
 )
 
 _VISUAL_HINT_RE = re.compile(r"\[visual:\s*[^\]]*\]\s*")

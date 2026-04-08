@@ -36,6 +36,12 @@ def cmd_draft_from_analysis(args: "argparse.Namespace") -> int:  # noqa: F821, C
     agent_summary = analysis.get("agent_summary", {})
     template = args.template
 
+    # Validate template up front — fail before writing any artifacts
+    if template not in TEMPLATE_COLUMNS:
+        available = ", ".join(sorted(TEMPLATE_COLUMNS.keys()))
+        print(f"ERROR: Unknown template '{template}'. Available templates: {available}", file=sys.stderr)
+        return 1
+
     if not blocks:
         print("ERROR: No draft blocks found in analysis.json. "
               "Cannot generate draft. Check scan-video output.", file=sys.stderr)
@@ -242,6 +248,15 @@ def cmd_draft_from_analysis(args: "argparse.Namespace") -> int:  # noqa: F821, C
         for col in tmpl_def["columns"]:
             if isinstance(col, dict) and col.get("naming_field"):
                 cat = col.get("naming_category", "")
+                if not cat:
+                    # Fallback: infer category from field name when naming_category is absent
+                    field = col.get("field", "")
+                    if field in ("characters",):
+                        cat = "characters"
+                    elif field in ("scene", "location"):
+                        cat = "scenes"
+                    elif field in ("props",):
+                        cat = "props"
                 if cat:
                     naming_categories.add(cat)
 

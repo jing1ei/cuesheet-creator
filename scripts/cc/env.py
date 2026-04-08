@@ -197,23 +197,24 @@ def download_ffmpeg(target_dir: Path | None = None, dry_run: bool = False) -> di
     dest = target_dir or LOCAL_FFMPEG_SEARCH_ROOT
     dest.mkdir(parents=True, exist_ok=True)
 
-    # Check if ffmpeg already exists
-    for candidate in [dest / "bin" / "ffmpeg.exe"]:
-        if candidate.exists():
-            return {
-                "success": True,
-                "message": f"FFmpeg already exists at {candidate}. No download needed.",
-                "path": str(candidate.parent),
-                "already_existed": True,
-            }
+    # Check if ffmpeg AND ffprobe already exist
+    bin_dir = dest / "bin"
+    if (bin_dir / "ffmpeg.exe").exists() and (bin_dir / "ffprobe.exe").exists():
+        return {
+            "success": True,
+            "message": f"FFmpeg already exists at {bin_dir}. No download needed.",
+            "path": str(bin_dir),
+            "already_existed": True,
+        }
     # Also check nested release folders
     if dest.exists():
         for child in dest.iterdir():
-            if child.is_dir() and (child / "bin" / "ffmpeg.exe").exists():
+            child_bin = child / "bin"
+            if child.is_dir() and (child_bin / "ffmpeg.exe").exists() and (child_bin / "ffprobe.exe").exists():
                 return {
                     "success": True,
-                    "message": f"FFmpeg already exists at {child / 'bin' / 'ffmpeg.exe'}. No download needed.",
-                    "path": str(child / "bin"),
+                    "message": f"FFmpeg already exists at {child_bin / 'ffmpeg.exe'}. No download needed.",
+                    "path": str(child_bin),
                     "already_existed": True,
                 }
 
@@ -263,14 +264,16 @@ def download_ffmpeg(target_dir: Path | None = None, dry_run: bool = False) -> di
         with zipfile.ZipFile(buffer) as zf:
             zf.extractall(dest)
 
-        # Verify extraction
+        # Verify extraction — require both ffmpeg.exe and ffprobe.exe
         ffmpeg_found = None
-        if (dest / "bin" / "ffmpeg.exe").exists():
-            ffmpeg_found = str(dest / "bin")
+        check_bin = dest / "bin"
+        if (check_bin / "ffmpeg.exe").exists() and (check_bin / "ffprobe.exe").exists():
+            ffmpeg_found = str(check_bin)
         else:
             for child in dest.iterdir():
-                if child.is_dir() and (child / "bin" / "ffmpeg.exe").exists():
-                    ffmpeg_found = str(child / "bin")
+                child_bin = child / "bin"
+                if child.is_dir() and (child_bin / "ffmpeg.exe").exists() and (child_bin / "ffprobe.exe").exists():
+                    ffmpeg_found = str(child_bin)
                     break
 
         if ffmpeg_found:
@@ -284,7 +287,7 @@ def download_ffmpeg(target_dir: Path | None = None, dry_run: bool = False) -> di
         else:
             return {
                 "success": False,
-                "message": f"Download and extraction completed but ffmpeg.exe not found in {dest}. Check the archive structure.",
+                "message": f"Download and extraction completed but ffmpeg.exe/ffprobe.exe not found in {dest}. Check the archive structure.",
                 "path": str(dest),
                 "size_mb": round(size_mb, 1),
             }
@@ -471,7 +474,7 @@ def make_selfcheck_report() -> dict[str, Any]:
             warnings.append(f"Optional component unavailable: {name}")
 
     # Quality tier: 'recommended' requires scenedetect for production-grade segmentation
-    scene_available = optional_components.get("scenedetect", {}).get("available", False)
+    scene_available = optional_components.get("scene:scenedetect", {}).get("available", False)
     if scene_available:
         quality_tier = "recommended"
     else:
