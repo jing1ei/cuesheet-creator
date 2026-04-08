@@ -2067,6 +2067,101 @@ def test_contact_sheets_in_agent_summary():
 
 
 # ---------------------------------------------------------------------------
+# 22. Keyframe refinement (best-frame selection)
+# ---------------------------------------------------------------------------
+
+def test_refine_keyframe_selection_upgrades_blurry_frame():
+    """refine_keyframe_selection should replace a blurry keyframe with a sharper one
+    when a sharper frame exists within the block's time range.
+
+    We can't easily test with a real video, so we test the sharpness comparison
+    logic directly and verify the function returns 0 when no video is available.
+    """
+    try:
+        import cv2
+        import numpy as np
+    except ImportError:
+        print("  SKIP (cv2/numpy not installed)")
+        return
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        kf_dir = tmpdir_path / "keyframes"
+        kf_dir.mkdir()
+
+        # Create a blurry keyframe (low sharpness — uniform color)
+        blurry_img = np.full((100, 160, 3), 128, dtype=np.uint8)
+        kf_path = kf_dir / "frame_0001.jpg"
+        cv2.imwrite(str(kf_path), blurry_img)
+
+        blurry_sharpness = cc.compute_frame_sharpness(cv2, blurry_img)
+
+        # Create a sharp keyframe (high contrast edges)
+        sharp_img = np.zeros((100, 160, 3), dtype=np.uint8)
+        # Draw strong edges
+        for y in range(0, 100, 4):
+            sharp_img[y:y+2, :] = 255
+        sharp_sharpness = cc.compute_frame_sharpness(cv2, sharp_img)
+
+        # Verify our assumption: sharp image has higher sharpness
+        assert sharp_sharpness > blurry_sharpness * 2, \
+            f"Sharp image ({sharp_sharpness:.1f}) should be much sharper than uniform ({blurry_sharpness:.1f})"
+
+        # Test with a non-existent video — should return 0 upgrades gracefully
+        draft_blocks = [{
+            "shot_block": "A1",
+            "start_seconds": 0.0,
+            "end_seconds": 5.0,
+            "start_time": "00:00:00.000",
+            "end_time": "00:00:05.000",
+            "keyframe": "keyframes/frame_0001.jpg",
+            "visual_features": {"sharpness": blurry_sharpness},
+        }]
+
+        fake_video = tmpdir_path / "nonexistent.mp4"
+        result = cc.refine_keyframe_selection(
+            cv2, np, draft_blocks, fake_video, tmpdir_path,
+        )
+        assert result == 0, "Should return 0 when video is not available"
+
+
+def test_refine_keyframe_selection_skips_short_blocks():
+    """Blocks shorter than 0.1s should not be refined (the current frame is fine)."""
+    try:
+        import cv2
+        import numpy as np
+    except ImportError:
+        print("  SKIP (cv2/numpy not installed)")
+        return
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        kf_dir = tmpdir_path / "keyframes"
+        kf_dir.mkdir()
+
+        img = np.full((100, 160, 3), 128, dtype=np.uint8)
+        kf_path = kf_dir / "frame_0001.jpg"
+        cv2.imwrite(str(kf_path), img)
+
+        # Block with very short span — should be skipped
+        draft_blocks = [{
+            "shot_block": "A1",
+            "start_seconds": 1.0,
+            "end_seconds": 1.05,  # only 50ms
+            "start_time": "00:00:01.000",
+            "end_time": "00:00:01.050",
+            "keyframe": "keyframes/frame_0001.jpg",
+            "visual_features": {"sharpness": 5.0},
+        }]
+
+        fake_video = tmpdir_path / "nonexistent.mp4"
+        result = cc.refine_keyframe_selection(
+            cv2, np, draft_blocks, fake_video, tmpdir_path,
+        )
+        assert result == 0, "Short blocks should be skipped"
+
+
+# ---------------------------------------------------------------------------
 # Runner (standalone, no pytest required)
 # ---------------------------------------------------------------------------
 

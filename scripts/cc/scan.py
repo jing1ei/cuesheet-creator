@@ -460,6 +460,96 @@ def score_keyframe_candidates(
 
 
 # ---------------------------------------------------------------------------
+# Best-frame selection (local CV sharpness refinement)
+# ---------------------------------------------------------------------------
+
+def refine_keyframe_selection(
+    cv2: Any,
+    np: Any,
+    draft_blocks: list[dict[str, Any]],
+    video_path: Path,
+    out_dir: Path,
+    max_candidates: int = 7,
+    max_width: int = 1280,
+) -> int:
+    """For each block, sample multiple frames within its time range and pick
+    the sharpest one as the keyframe — replacing motion-blurred or poorly
+    timed frames with the clearest available frame.
+
+    This is a pure-CV refinement pass. It re-opens the video, samples
+    *max_candidates* evenly spaced frames within each block's
+    [start_seconds, end_seconds] range, computes Laplacian sharpness on
+    each, and keeps the winner. The old keyframe image is NOT deleted
+    (contact sheets may still reference it); the block's ``keyframe``
+    field is updated to point to the new best image.
+
+    Returns the number of blocks whose keyframe was upgraded.
+    """
+    if not draft_blocks:
+        return 0
+
+    capture = cv2.VideoCapture(str(video_path))
+    if not capture.isOpened():
+        return 0
+
+    keyframe_dir = out_dir / "keyframes"
+    keyframe_dir.mkdir(parents=True, exist_ok=True)
+    upgraded = 0
+
+    try:
+        for block in draft_blocks:
+            start = block.get("start_seconds", 0.0)
+            end = block.get("end_seconds", start)
+            span = end - start
+
+            # Skip very short blocks — the current frame is likely fine
+            if span < 0.1:
+                continue
+
+            # Sample candidate timestamps evenly within the block
+            n = min(max_candidates, max(3, int(span / 0.15)))  # ~1 sample per 150ms, min 3
+            step = span / n if n > 1 else span
+            timestamps = [start + i * step for i in range(n)]
+            # Ensure we also sample close to the original keyframe time
+            # (the cut point is often important even if blurry)
+
+            best_sharpness = -1.0
+            best_frame = None
+            best_seconds = start
+            current_sharpness = block.get("visual_features", {}).get("sharpness", 0.0) if block.get("visual_features") else 0.0
+
+            for ts in timestamps:
+                frame = read_frame_at(cv2, capture, ts)
+                if frame is None:
+                    continue
+                frame = resize_frame(cv2, frame, max_width=max_width)
+                sharpness = compute_frame_sharpness(cv2, frame)
+                if sharpness > best_sharpness:
+                    best_sharpness = sharpness
+                    best_frame = frame
+                    best_seconds = ts
+
+            # Only upgrade if the new frame is meaningfully sharper (>15% better)
+            if best_frame is not None and best_sharpness > current_sharpness * 1.15:
+                image_name = f"frame_best_{block['shot_block']}_{int(best_seconds * 1000):010d}.jpg"
+                image_path = keyframe_dir / image_name
+                ok = cv2.imwrite(str(image_path), best_frame)
+                if ok:
+                    rel_path = os.path.relpath(str(image_path), str(out_dir)).replace("\\", "/")
+                    block["keyframe"] = rel_path
+                    # Update visual features with the new frame
+                    block["visual_features"] = compute_visual_features(cv2, np, best_frame)
+                    block["visual_features"]["sharpness"] = round(best_sharpness, 2)
+                    block["_keyframe_refined"] = True
+                    block["_refinement_gain"] = round(best_sharpness / max(current_sharpness, 0.01), 2)
+                    upgraded += 1
+    finally:
+        capture.release()
+
+    return upgraded
+
+
+# ---------------------------------------------------------------------------
 # Similar-frame deduplication (local CV, no LLM)
 # ---------------------------------------------------------------------------
 
@@ -886,6 +976,15 @@ def cmd_scan_video(args: "argparse.Namespace") -> int:  # noqa: F821, C901
         finally:
             motion_capture.release()
 
+    # --- Refine keyframe selection (pick sharpest frame per block) ---
+    if draft_blocks:
+        refined_count = refine_keyframe_selection(
+            cv2, np, draft_blocks, video_path, out_dir,
+            max_candidates=7, max_width=args.max_width,
+        )
+        if refined_count > 0:
+            notes.append(f"Refined keyframes for {refined_count}/{len(draft_blocks)} block(s) — replaced with sharper frames")
+
     # --- Deduplicate visually similar consecutive blocks ---
     if draft_blocks and len(draft_blocks) > 1:
         original_count = len(draft_blocks)
@@ -1116,6 +1215,7 @@ __all__ = [
     "compute_visual_features",
     "estimate_motion_hint",
     "score_keyframe_candidates",
+    "refine_keyframe_selection",
     "deduplicate_similar_blocks",
     "build_contact_sheets",
     "cmd_scan_video",

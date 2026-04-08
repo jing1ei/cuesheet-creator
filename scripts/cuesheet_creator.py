@@ -157,6 +157,7 @@ from cc.scan import (  # noqa: F811
     run_asr_faster_whisper,
     run_ocr_on_frames,
     score_keyframe_candidates,
+    refine_keyframe_selection,
     build_contact_sheets,
     deduplicate_similar_blocks,
 )
