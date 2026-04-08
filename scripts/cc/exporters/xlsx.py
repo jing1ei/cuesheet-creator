@@ -42,6 +42,15 @@ def cmd_build_xlsx(args: "argparse.Namespace") -> int:  # noqa: F821
     wrap_alignment = Alignment(wrap_text=True, vertical="top")
 
     columns = TEMPLATE_COLUMNS[template]
+
+    # --embed-keyframes: inject a keyframe column even if the template doesn't define one
+    embed_keyframes_override = hasattr(args, "embed_keyframes") and args.embed_keyframes
+    if embed_keyframes_override and "keyframe" not in columns:
+        # Insert keyframe column right after end_time (position 3, 0-indexed)
+        columns = list(columns)  # copy to avoid mutating the registry
+        insert_pos = columns.index("end_time") + 1 if "end_time" in columns else 3
+        columns.insert(insert_pos, "keyframe")
+
     tmpl_widths = get_template_column_widths(template)
     for col_idx, column_name in enumerate(columns, start=1):
         cell = ws.cell(row=1, column=col_idx, value=column_name)
@@ -63,7 +72,7 @@ def cmd_build_xlsx(args: "argparse.Namespace") -> int:  # noqa: F821
             cell.alignment = wrap_alignment
 
         if keyframe_col_index is not None:
-            keyframe_value = item.get("keyframe")
+            keyframe_value = item.get("keyframe") or item.get("_keyframe")
             keyframe_path = resolve_keyframe_path(base_dir, keyframe_value)
             if keyframe_path and keyframe_path.exists():
                 with PILImage.open(keyframe_path) as img:

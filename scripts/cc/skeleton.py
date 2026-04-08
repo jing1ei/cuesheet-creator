@@ -67,6 +67,10 @@ def cmd_build_final_skeleton(args: "argparse.Namespace") -> int:  # noqa: F821
             else:
                 existing = block.get(col, "")
                 row[col] = existing if existing else ""
+        # Always preserve keyframe path even if the template doesn't have
+        # a keyframe column — xlsx/md export may need it for --embed-keyframes.
+        if "keyframe" not in columns and block.get("keyframe"):
+            row["_keyframe"] = block.get("keyframe", "")
         rows.append(row)
 
     raw_title = args.video_title or source.get("video_title") or source.get("video", {}).get("source_path")

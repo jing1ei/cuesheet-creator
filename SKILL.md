@@ -237,28 +237,50 @@ A cue sheet is **not delivery-ready** if any of these fail:
 
 ## Workflow
 
-### Step 0: Confirm input and delivery strategy
+### Step 0: Confirm user intent and delivery strategy
 
-> **Template/purpose confirmation is mandatory.** Before any analysis begins, ask the user who this cue sheet is for. This one question determines the entire downstream strategy (segmentation, keyframe priority, merge bias, columns). Do NOT silently default to `production` — always confirm.
+> **Intent confirmation is mandatory.** Before any analysis begins, the agent must understand what the user actually wants. Template selection is ONE part of intent — not the whole picture. Do NOT silently assume defaults for anything the user hasn't explicitly stated.
 
-**Exactly one question, before anything else:**
+**What the agent must know before proceeding (the "intent checklist"):**
 
-> "Got the video. Who is this cue sheet for? (Default is the general `production` template. You can also pick `music-director` / `script`, or tell me your department/role and I'll match a template.)"
+| # | Question | Why it matters | Default if user doesn't specify |
+|---|----------|----------------|--------------------------------|
+| **I1** | **Purpose**: Who will read this cue sheet and what will they do with it? | Determines template, column selection, fill-in perspective | `production` (cross-department collaboration) |
+| **I2** | **Template**: Which template to use? | Determines columns, segmentation strategy, merge rules | Inferred from I1 answer |
+| **I3** | **Keyframes in export**: Should the Excel/Markdown deliverable include embedded keyframe images? | Some templates (music-director, script) default to text-only, but the user may still want visual reference | `yes` for production; **ask** for music-director and script |
+| **I4** | **ASR/OCR**: Is dialogue or on-screen text important? | Determines whether to enable --asr / --ocr during scan | Infer from context; if video has dialogue or UI text, suggest enabling |
 
-If the user's answer clearly maps to a built-in template → use it. If the user describes a role not covered → trigger the custom template guided creation flow (see **Custom templates** section). If the user says "default" or just wants to get started → use `production`.
+**Agent behavior — confirm what you can't infer:**
 
-**Only proceed to Step 1 after template is confirmed.** This avoids re-doing analysis with different segmentation strategies later.
+1. If the user says *"make a cue sheet for this video"* with no further context → you know NOTHING about I1-I4. Ask:
+   > "Got the video. Before I start, I need to know:
+   > 1. Who is this cue sheet for? (director/producer collab, composer/scoring, script/story, or tell me your role)
+   > 2. Should the Excel include keyframe images, or text-only?"
+
+2. If the user says *"I need a music cue sheet"* → you can infer I1 (composer/scoring) and I2 (music-director). But I3 is ambiguous — the template defaults to no images, but the user might want them. Ask:
+   > "Using `music-director` template. Should the Excel include keyframe screenshots for visual reference, or keep it text-only?"
+
+3. If the user says *"process this video with production template, include images"* → all intent is clear. Proceed without asking.
+
+4. If the user says *"just do it"* or *"default is fine"* → use `production` template with keyframes embedded. Proceed without asking.
+
+**Rule: If intent is 100% clear from context, proceed immediately. If ANY ambiguity exists in I1-I3, ask ONCE with all unclear items in a single question. Never ask more than one round of questions.**
+
+**Only proceed to Step 1 after intent is confirmed.**
 
 | Item | Default |
 |---|---|
 | Video path | (must be provided by user) |
 | Output directory | `<video-dir>/<video-name>_cuesheet/` (same folder as the video) |
 | Delivery phase | Draft first, then final |
-| Output template | **Ask user** (fallback `production`) |
+| Output template | **Infer from intent, confirm if ambiguous** (fallback `production`) |
+| Embed keyframes in export | **yes** for production; **ask** for music-director/script |
 | Analyze specific segment only | No |
 | Keep intermediate JSON | Keep `analysis.json` |
 | Install strategy | `check-only` |
 | pip mirror | None (only if user specifies) |
+
+**Keyframe embedding override**: When the user requests keyframes in a template that doesn't have a `keyframe` column (e.g. music-director, script), the agent should pass `--template production` to `build-xlsx` for the export step ONLY (the fill-in still uses the original template's perspective and columns). Alternatively, use the `--base-dir` flag and ensure `keyframe` paths are preserved in `final_cues.json` even for non-production templates. See Step 4 for details.
 
 Video length strategy:
 

@@ -23,6 +23,14 @@ def cmd_export_md(args: "argparse.Namespace") -> int:  # noqa: F821
     base_dir = Path(args.base_dir).resolve() if hasattr(args, "base_dir") and args.base_dir else cue_json.parent.resolve()
     rows = payload.get("rows", [])
     columns = TEMPLATE_COLUMNS[template]
+
+    # --embed-keyframes: inject a keyframe column even if the template doesn't define one
+    embed_keyframes_override = hasattr(args, "embed_keyframes") and args.embed_keyframes
+    if embed_keyframes_override and "keyframe" not in columns:
+        columns = list(columns)
+        insert_pos = columns.index("end_time") + 1 if "end_time" in columns else 3
+        columns.insert(insert_pos, "keyframe")
+
     output_path = Path(args.output)
     ensure_parent(output_path)
 
@@ -52,7 +60,7 @@ def cmd_export_md(args: "argparse.Namespace") -> int:  # noqa: F821
     for row in rows:
         cells = []
         for col in columns:
-            value = str(row.get(col, ""))
+            value = str(row.get(col, "") or row.get(f"_{col}", "") if col == "keyframe" else row.get(col, ""))
             if col == "keyframe" and value:
                 kf_path = resolve_keyframe_path(base_dir, value)
                 if kf_path and not kf_path.exists():
