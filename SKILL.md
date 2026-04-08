@@ -59,6 +59,7 @@ Everything else has sensible defaults. If the user provides only a video, the ag
 |---|---|---|
 | `<out-dir>/analysis.json` | ✅ | Raw scan output — scene candidates, keyframes, ASR/OCR data. Contains `agent_summary` for compact LLM consumption. |
 | `<out-dir>/keyframes/*.jpg` | ✅ | Keyframe screenshots with sharpness scores |
+| `<out-dir>/keyframes/contact_batch_N.jpg` | ✅ | **Contact sheets** — grid images showing all keyframes in each batch with block ID labels. LLM reads ONE contact sheet per batch instead of N individual keyframes. Listed in `agent_summary.contact_sheets`. |
 | `<out-dir>/cue_sheet.md` | ✅ | Markdown deliverable (draft in Phase A, final in Phase B) |
 | `<out-dir>/draft_fill.json` | ✅ | **JSON fill-in file** — LLM edits THIS instead of the Markdown table. Pre-populated with block IDs, times, keyframe paths; all content fields are empty strings for LLM to fill. |
 | `<out-dir>/final_cues.json` | ✅ | Structured cue data for export |
@@ -91,6 +92,9 @@ The agent **MAY proceed automatically** (no user confirmation needed) in these c
 | ASR/OCR unavailable | → Continue without them, note degradation in draft |
 | User says "skip naming" or "use temp names" | → Proceed with temp markers, list unconfirmed items in final |
 | User provides naming overrides after C2 | → Apply overrides, then re-export |
+| Runtime assessment selects Tier 2 or 3 | → Announce tier selection, proceed without asking. Do NOT ask "should I use Tier 3?" — just do it and declare it. |
+| fill_status is "data-only" after Tier 3 | → Proceed to export. At C2, inform user about data-only limitations. |
+| Previous session failed at Step 3b | → On resume, escalate tier (see Resume rules). Do NOT retry same strategy. |
 
 ### Progress signals (mandatory)
 
@@ -114,10 +118,46 @@ The agent **MUST** emit a short status line to the user at these points. These a
 
 **Token budget**: All progress signals combined should cost <200 tokens per full workflow. Use terse, factual messages. No pleasantries, no explanations.
 
+### Runtime capability assessment (mandatory before Step 3b)
+
+> **Before starting keyframe fill-in, the agent MUST assess its own runtime constraints and select the appropriate fill-in tier.** This is not optional — skipping this assessment is the #1 cause of workflow failure.
+
+**Assess these three dimensions:**
+
+| Dimension | How to check | What matters |
+|---|---|---|
+| **Step budget** | Count remaining available tool calls in this session. If unknown, assume 50 total, subtract calls already made. | Fill-in needs ~(N_batches × 2) calls minimum: N reads + N writes. If budget < (batches × 2 + 10), use Tier 2 or 3. |
+| **Image viewing** | Can the agent call `read_file` on a `.jpg` and receive visual content (not just bytes)? | If NO image capability → must use Tier 3. |
+| **Context capacity** | Is the context window large enough to hold agent_summary + all batch images + draft_fill.json simultaneously? | With 1M context this is rarely the issue. With <200K, may need Tier 2. |
+
+**Select a tier based on assessment:**
+
+| Tier | When to use | Strategy | `fill_status` value |
+|---|---|---|---|
+| **Tier 1: Full visual** | Image viewing works AND step budget ≥ (batches × 2 + 10) | Read keyframes in batches, fill all semantic fields from visual analysis | `"complete"` |
+| **Tier 2: Batch-compressed visual** | Image viewing works BUT step budget is tight | Read ALL keyframes in ONE tool call batch (parallel read_file calls), fill ALL blocks in ONE write pass | `"complete"` |
+| **Tier 3: Data-informed fill** | No image viewing capability OR step budget critically low | Use `visual_features`, `motion_hint`, ASR, OCR data from `analysis.json` to fill fields. Do NOT fabricate scene/character details not supported by data. | `"data-only"` |
+
+> **Tier selection is announced to the user** as a progress signal:
+> - Tier 1: `Fill-in: Tier 1 (full visual), N batches.`
+> - Tier 2: `Fill-in: Tier 2 (compressed), all keyframes in 1 round.`
+> - Tier 3: `Fill-in: Tier 3 (data-informed, no visual review). Scene/character fields may need manual review.`
+
+**Tier 3 constraints** (data-only fill-in):
+- `shot_size`: Infer ONLY if `visual_features` data is present (cannot determine without seeing the frame — leave empty if unsure)
+- `motion`: Use `motion_hint` field directly (`likely-static` → `static`, `likely-camera-move` → leave as description)
+- `mood`: Derive from `visual_features.tone` + `visual_features.color_temp` + `visual_features.contrast` using the mapping rules
+- `scene` / `characters` / `event`: Mark as `"[data-only: requires visual confirmation]"` — do NOT guess
+- `important_dialogue`: Use ASR prefill as-is (already populated by draft-from-analysis)
+- `confidence`: Append `; fill=data-only` to the existing confidence string
+
+> **Critical**: Tier 3 exists to **unblock the pipeline**, not to produce final content. The output will have gaps. This is explicitly better than the workflow hanging forever at Step 3b.
+
 ### Efficiency rules
 
 - **Step 2 (scan-video)**: `analysis.json` now contains an `agent_summary` field — a compact overview with block IDs, keyframe paths grouped into batches, and ASR/OCR summaries. **Read `agent_summary` instead of the full `analysis.json`** to avoid exhausting token budget.
-- **Step 3b (LLM fill-in)**: Fill in `draft_fill.json` (a JSON file), NOT the Markdown table. View keyframes in batches of 5-8 images using the batch groups listed in `agent_summary.keyframe_batches`. Fill ALL blocks in one writing pass per batch. Do NOT loop one image at a time — this will exhaust token budget and step limits.
+- **Step 3b (LLM fill-in)**: Fill in `draft_fill.json` (a JSON file), NOT the Markdown table. **First run the runtime capability assessment above and select a tier.** Then execute accordingly. Do NOT loop one image at a time — this will exhaust step limits regardless of token budget.
+- **Step 3b tool call pattern** (Tier 1 and 2): Use **parallel tool calls** where the runtime supports it. Read multiple keyframe images in the SAME tool call batch (not sequentially). Write ALL blocks for a batch in ONE `replace_in_file` or `write_to_file` call, not one block at a time.
 - **Step 7 (Export)**: Run `build-xlsx` and `export-md` as single CLI commands. Do NOT manually embed images or generate Excel content in the conversation.
 
 ### Resume rules
@@ -127,12 +167,15 @@ If the workflow is interrupted mid-session:
 1. **Check what already exists** in `<out-dir>/`:
    - If `analysis.json` exists → skip scan-video.
    - If `draft_fill.json` exists → check its `fill_status` field:
-     - `"pending"` → fill-in has NOT been done yet. Read `draft_fill.json` and continue filling.
+     - `"pending"` → fill-in has NOT been done yet. Run runtime capability assessment, then start filling.
+     - `"partial"` → fill-in was started but not completed. **Check which blocks already have content** (non-empty `scene` or `event` field). Skip those blocks, continue filling only empty ones. Do NOT restart from Batch 1.
+     - `"data-only"` → data-informed fill was completed. Proceed to Step 4 export. At C2 checkpoint, inform user: "This draft was filled using algorithm data only (no visual review). Scene/character fields may need manual correction."
      - `"complete"` → fill-in is done. Proceed to naming confirmation (C2) or merge step.
    - If `cue_sheet.md` exists but `draft_fill.json` does not → skeleton was generated but JSON fill-in file is missing. Re-run `draft-from-analysis` to regenerate both.
 2. **Re-read existing artifacts** before continuing — don't regenerate what's already there.
 3. **Re-running any command is safe** — all commands overwrite their output files without corrupting other artifacts in the same directory.
-4. **Naming confirmation state is NOT persisted** — if the session is interrupted after C2, ask again about naming when you re-export.
+4. **On resume after step-limit failure**: Re-run the runtime capability assessment. If the previous attempt used Tier 1 and failed, **escalate to Tier 2**. If Tier 2 also failed, **escalate to Tier 3**. Do NOT retry the same tier that failed.
+5. **Naming confirmation state is NOT persisted** — if the session is interrupted after C2, ask again about naming when you re-export.
 
 ### Hard acceptance criteria (for validate-cue-json)
 
@@ -361,16 +404,38 @@ The JSON file has `fill_status: "partial"` (when pre-fills exist) or `"pending"`
 
 #### 3b. LLM content fill-in (critical step — use JSON, not Markdown)
 
+> **CRITICAL — Before starting, run the Runtime capability assessment** (see Agent Contract above) to select Tier 1, 2, or 3. Do NOT start reading images until you have confirmed which tier you are using.
+
 > **CRITICAL — JSON fill-in workflow**: Edit `draft_fill.json`, NOT the Markdown table.
+
+> **Contact sheets**: `scan-video` now generates **contact sheet images** — one per batch, each containing a grid of all keyframe thumbnails for that batch with block ID labels. These are listed in `agent_summary.contact_sheets`. **Use contact sheets instead of individual keyframes** to reduce tool calls from N to N/batch_size.
+
+**Tier 1 (full visual) — default when step budget allows:**
 > 1. Read `agent_summary` from `analysis.json` (NOT the full file — just the `agent_summary` field)
-> 2. View keyframe images in batches listed in `agent_summary.keyframe_batches` (5-8 at a time)
+> 2. Check `agent_summary.contact_sheets` — if available, read ONE contact sheet image per batch (each shows ~6 keyframes in a labeled grid). If contact sheets are missing (e.g. older analysis.json), fall back to reading individual keyframes in batches.
 > 3. For each batch, fill in ALL corresponding blocks in `draft_fill.json` in one write pass
 > 4. After ALL blocks are filled, update `fill_status` from `"partial"` (or `"pending"`) to `"complete"`
-> 5. Note: some fields already have auto-generated content (e.g. `important_dialogue` from ASR, `mood` with `[visual: ...]` hints, `confidence`). The LLM should **incorporate or replace** these — they are hints, not final content.
+>
+> **Tool call budget with contact sheets**: For a 26-block cue sheet with 5 batches, this is 1 (read agent_summary) + 5 (read contact sheets) + 5 (write batches) + 1 (update fill_status) = **12 tool calls total**, down from 30+.
+
+**Tier 2 (batch-compressed) — when step budget is tight:**
+> 1. Read `agent_summary` from `analysis.json`
+> 2. Read ALL contact sheet images in ONE parallel tool call batch (all read_file calls at once)
+> 3. Fill ALL blocks in `draft_fill.json` in ONE write pass
+> 4. Update `fill_status` to `"complete"`
+>
+> **Tool call budget**: 1 (read agent_summary) + 1 turn with N parallel reads + 1 (write all blocks) + 1 (update fill_status) = **4 turns total**.
+
+**Tier 3 (data-informed) — when image viewing unavailable or step budget critically low:**
+> 1. Read `agent_summary` from `analysis.json` (includes `visual_features`, `motion_hint`, ASR, OCR for each block)
+> 2. Fill fields using ONLY the data available (see Tier 3 constraints in Runtime capability assessment)
+> 3. Update `fill_status` to `"data-only"`
+
+> Note: some fields already have auto-generated content (e.g. `important_dialogue` from ASR, `mood` with `[visual: ...]` hints, `confidence`). The LLM should **incorporate or replace** these — they are hints, not final content.
 >
 > **Why JSON instead of Markdown**: JSON fields avoid column-misalignment bugs from Markdown pipe characters. LLM can target specific fields without counting table columns. The filled JSON can feed directly into `build-final-skeleton` and `validate-cue-json`.
 >
-> The goal is to minimize tool calls. A 20-block cue sheet should take 2-4 rounds (one per keyframe batch), not 20.
+> The goal is to minimize tool calls. A 26-block cue sheet should take **5-6 turns** (Tier 1 with contact sheets) or **4 turns** (Tier 2), not 30+.
 
 For each shot block, use the corresponding keyframe to fill in fields using these rules:
 
@@ -455,8 +520,13 @@ python scripts/cuesheet_creator.py export-md --cue-json <out-dir>/final_cues.jso
 
 **Present the deliverable to the user** (this is checkpoint **C2**):
 
+If `fill_status` was `"complete"` (Tier 1 or 2):
 > "Here's the draft Cue Sheet. Temporary names (temp: xxx) haven't been replaced yet. Take a look at the overall structure and content first.
 > Want to replace the temporary names? Or use this version as-is?"
+
+If `fill_status` was `"data-only"` (Tier 3):
+> "Here's the draft Cue Sheet — filled using algorithm analysis data only (no visual keyframe review was performed). Fields marked `[data-only: requires visual confirmation]` need manual review. The mood/motion fields are based on computed visual features and may be approximate.
+> Options: (1) Review and correct specific blocks, (2) Accept as-is for now, (3) Re-run with visual review if you can provide a shorter video segment."
 
 ### Step 4b: Naming refinement (optional, only if user provides names)
 

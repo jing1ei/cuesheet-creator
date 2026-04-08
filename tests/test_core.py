@@ -1936,6 +1936,137 @@ def test_merge_blocks_sorts_output_chronologically():
 
 
 # ---------------------------------------------------------------------------
+# 21. Contact sheet generation
+# ---------------------------------------------------------------------------
+
+def test_build_contact_sheets_creates_grid_images():
+    """build_contact_sheets should produce one JPG per batch with all keyframes in a grid."""
+    try:
+        import cv2
+        import numpy as np
+    except ImportError:
+        print("  SKIP (cv2/numpy not installed)")
+        return
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        kf_dir = tmpdir_path / "keyframes"
+        kf_dir.mkdir()
+
+        # Create 8 dummy keyframe images (should produce 2 contact sheets with batch_size=6)
+        draft_blocks = []
+        for i in range(1, 9):
+            kf_name = f"frame_{i:04d}.jpg"
+            kf_path = kf_dir / kf_name
+            # Create a simple colored image so we can verify it's a real image
+            img = np.full((100, 160, 3), (50 + i * 20) % 256, dtype=np.uint8)
+            cv2.imwrite(str(kf_path), img)
+            draft_blocks.append({
+                "shot_block": f"A{i}",
+                "start_seconds": float(i - 1) * 5,
+                "end_seconds": float(i) * 5,
+                "start_time": cc.format_seconds(float(i - 1) * 5),
+                "end_time": cc.format_seconds(float(i) * 5),
+                "keyframe": f"keyframes/{kf_name}",
+            })
+
+        result = cc.build_contact_sheets(
+            cv2, np, draft_blocks, tmpdir_path,
+            batch_size=6, grid_cols=3, thumb_width=160,
+        )
+
+        # Should produce 2 contact sheets (6 + 2)
+        assert len(result) == 2, f"Expected 2 contact sheets, got {len(result)}"
+
+        # First sheet should have 6 keyframes
+        assert result[0]["batch_index"] == 1
+        assert result[0]["keyframe_count"] == 6
+        assert len(result[0]["block_ids"]) == 6
+        assert result[0]["block_ids"] == ["A1", "A2", "A3", "A4", "A5", "A6"]
+
+        # Second sheet should have 2 keyframes
+        assert result[1]["batch_index"] == 2
+        assert result[1]["keyframe_count"] == 2
+        assert result[1]["block_ids"] == ["A7", "A8"]
+
+        # Verify files exist and are valid images
+        for sheet in result:
+            sheet_path = tmpdir_path / sheet["image_path"]
+            assert sheet_path.exists(), f"Contact sheet not found: {sheet_path}"
+            img = cv2.imread(str(sheet_path))
+            assert img is not None, f"Contact sheet is not a valid image: {sheet_path}"
+            h, w = img.shape[:2]
+            assert w > 0 and h > 0, f"Contact sheet has zero dimensions: {w}x{h}"
+
+        # Verify path format is relative with forward slashes
+        for sheet in result:
+            assert "\\" not in sheet["image_path"], f"Path should use forward slashes: {sheet['image_path']}"
+            assert sheet["image_path"].startswith("keyframes/"), f"Path should be relative to out_dir: {sheet['image_path']}"
+
+
+def test_build_contact_sheets_no_keyframes():
+    """build_contact_sheets with no keyframes should return empty list."""
+    try:
+        import cv2
+        import numpy as np
+    except ImportError:
+        print("  SKIP (cv2/numpy not installed)")
+        return
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        draft_blocks = [
+            {"shot_block": "A1", "start_seconds": 0, "end_seconds": 5,
+             "start_time": "00:00:00.000", "end_time": "00:00:05.000"},
+        ]
+        result = cc.build_contact_sheets(cv2, np, draft_blocks, Path(tmpdir))
+        assert result == [], f"Expected empty list for blocks without keyframes, got {result}"
+
+
+def test_contact_sheets_in_agent_summary():
+    """agent_summary should include contact_sheets field after scan-video generates them."""
+    # This is a structural test — we verify the field exists in the expected format
+    # by checking that build_contact_sheets output matches agent_summary schema
+    try:
+        import cv2
+        import numpy as np
+    except ImportError:
+        print("  SKIP (cv2/numpy not installed)")
+        return
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        kf_dir = tmpdir_path / "keyframes"
+        kf_dir.mkdir()
+
+        draft_blocks = []
+        for i in range(1, 4):
+            kf_name = f"frame_{i:04d}.jpg"
+            kf_path = kf_dir / kf_name
+            img = np.full((100, 160, 3), 128, dtype=np.uint8)
+            cv2.imwrite(str(kf_path), img)
+            draft_blocks.append({
+                "shot_block": f"A{i}",
+                "start_seconds": float(i - 1) * 5,
+                "end_seconds": float(i) * 5,
+                "start_time": cc.format_seconds(float(i - 1) * 5),
+                "end_time": cc.format_seconds(float(i) * 5),
+                "keyframe": f"keyframes/{kf_name}",
+            })
+
+        sheets = cc.build_contact_sheets(cv2, np, draft_blocks, tmpdir_path, batch_size=6)
+        assert len(sheets) == 1, "3 blocks should produce 1 contact sheet"
+
+        # Verify schema matches what agent_summary expects
+        sheet = sheets[0]
+        assert "batch_index" in sheet
+        assert "block_ids" in sheet
+        assert "image_path" in sheet
+        assert "keyframe_count" in sheet
+        assert isinstance(sheet["block_ids"], list)
+        assert isinstance(sheet["image_path"], str)
+
+
+# ---------------------------------------------------------------------------
 # Runner (standalone, no pytest required)
 # ---------------------------------------------------------------------------
 

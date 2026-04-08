@@ -460,6 +460,149 @@ def score_keyframe_candidates(
 
 
 # ---------------------------------------------------------------------------
+# Contact sheet generation (batch keyframe grids)
+# ---------------------------------------------------------------------------
+
+def build_contact_sheets(
+    cv2: Any,
+    np: Any,
+    draft_blocks: list[dict[str, Any]],
+    out_dir: Path,
+    batch_size: int = 6,
+    grid_cols: int = 3,
+    thumb_width: int = 420,
+    label_height: int = 28,
+) -> list[dict[str, Any]]:
+    """Build contact sheet images — one per keyframe batch.
+
+    Each contact sheet is a grid of keyframe thumbnails with block ID labels,
+    so an LLM agent can view one image to see an entire batch of keyframes.
+    This reduces the tool calls from N (one per keyframe) to N/batch_size.
+
+    Returns a list of dicts: [{"batch_index": 1, "block_ids": [...],
+    "image_path": "keyframes/contact_batch_1.jpg", "keyframe_count": 6}, ...]
+    """
+    # Collect blocks that have keyframe paths
+    blocks_with_kf = []
+    for block in draft_blocks:
+        kf = block.get("keyframe")
+        if kf:
+            blocks_with_kf.append(block)
+
+    if not blocks_with_kf:
+        return []
+
+    # Split into batches
+    batches: list[list[dict[str, Any]]] = []
+    for i in range(0, len(blocks_with_kf), batch_size):
+        batches.append(blocks_with_kf[i:i + batch_size])
+
+    contact_dir = out_dir / "keyframes"
+    contact_dir.mkdir(parents=True, exist_ok=True)
+
+    results: list[dict[str, Any]] = []
+
+    for batch_idx, batch in enumerate(batches, start=1):
+        thumbnails: list[tuple[str, Any]] = []  # (block_id, resized_frame)
+
+        for block in batch:
+            kf_path_str = block.get("keyframe", "")
+            # Resolve: relative paths are relative to out_dir
+            kf_path = Path(kf_path_str)
+            if not kf_path.is_absolute():
+                kf_path = out_dir / kf_path
+            if not kf_path.exists():
+                continue
+
+            frame = cv2.imread(str(kf_path))
+            if frame is None:
+                continue
+
+            # Resize to thumbnail width, preserving aspect ratio
+            h, w = frame.shape[:2]
+            scale = thumb_width / float(w) if w > thumb_width else 1.0
+            new_w = int(w * scale)
+            new_h = int(h * scale)
+            if scale < 1.0:
+                frame = cv2.resize(frame, (new_w, new_h))
+            else:
+                new_w, new_h = w, h
+
+            thumbnails.append((block.get("shot_block", "?"), frame, new_w, new_h))
+
+        if not thumbnails:
+            continue
+
+        # Compute uniform cell size (max dimensions across all thumbs in this batch)
+        cell_w = max(t[2] for t in thumbnails)
+        cell_h = max(t[3] for t in thumbnails) + label_height
+
+        grid_rows = math.ceil(len(thumbnails) / grid_cols)
+        canvas_w = cell_w * min(len(thumbnails), grid_cols)
+        canvas_h = cell_h * grid_rows
+
+        # Create canvas (white background)
+        canvas = np.full((canvas_h, canvas_w, 3), 255, dtype=np.uint8)
+
+        block_ids: list[str] = []
+        for idx, (block_id, thumb, tw, th) in enumerate(thumbnails):
+            row = idx // grid_cols
+            col = idx % grid_cols
+            x_offset = col * cell_w
+            y_offset = row * cell_h
+
+            # Center the thumbnail in the cell horizontally
+            x_start = x_offset + (cell_w - tw) // 2
+            y_start = y_offset + label_height  # leave room for label
+
+            # Place thumbnail
+            canvas[y_start:y_start + th, x_start:x_start + tw] = thumb[:th, :tw]
+
+            # Draw label background (dark bar)
+            cv2.rectangle(canvas, (x_offset, y_offset),
+                          (x_offset + cell_w, y_offset + label_height), (30, 30, 30), -1)
+
+            # Draw block ID text
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 0.7
+            thickness = 2
+            text = f"{block_id}"
+            text_size = cv2.getTextSize(text, font, font_scale, thickness)[0]
+            text_x = x_offset + (cell_w - text_size[0]) // 2
+            text_y = y_offset + label_height - 6
+            cv2.putText(canvas, text, (text_x, text_y), font, font_scale, (255, 255, 255), thickness)
+
+            # Draw block time range below ID
+            block_data = next((b for b in draft_blocks if b.get("shot_block") == block_id), None)
+            if block_data:
+                time_text = f"{block_data.get('start_time', '')} - {block_data.get('end_time', '')}"
+                time_scale = 0.4
+                time_size = cv2.getTextSize(time_text, font, time_scale, 1)[0]
+                time_x = x_offset + (cell_w - time_size[0]) // 2
+                time_y = y_offset + label_height - 6 + text_size[1] + 2
+                # Only draw if it fits within the label area — otherwise skip
+                if time_y < y_offset + label_height + th:
+                    cv2.putText(canvas, time_text, (time_x, min(time_y, y_start - 2)),
+                                font, time_scale, (200, 200, 200), 1)
+
+            block_ids.append(block_id)
+
+        # Save contact sheet
+        contact_path = contact_dir / f"contact_batch_{batch_idx}.jpg"
+        cv2.imwrite(str(contact_path), canvas, [cv2.IMWRITE_JPEG_QUALITY, 90])
+
+        rel_path = os.path.relpath(str(contact_path), str(out_dir)).replace("\\", "/")
+        results.append({
+            "batch_index": batch_idx,
+            "block_ids": block_ids,
+            "image_path": rel_path,
+            "keyframe_count": len(thumbnails),
+        })
+
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Main scan command
 # ---------------------------------------------------------------------------
 
@@ -736,6 +879,18 @@ def cmd_scan_video(args: "argparse.Namespace") -> int:  # noqa: F821, C901
     for i in range(0, len(all_keyframe_paths), KEYFRAME_BATCH_SIZE):
         keyframe_batches.append(all_keyframe_paths[i:i + KEYFRAME_BATCH_SIZE])
 
+    # --- Contact sheets (batch keyframe grids) ---
+    contact_sheets: list[dict[str, Any]] = []
+    try:
+        contact_sheets = build_contact_sheets(
+            cv2, np, draft_blocks, out_dir,
+            batch_size=KEYFRAME_BATCH_SIZE, grid_cols=3, thumb_width=420,
+        )
+        if contact_sheets:
+            notes.append(f"Generated {len(contact_sheets)} contact sheet(s) for batch keyframe review")
+    except Exception as exc:
+        notes.append(f"Contact sheet generation failed (non-blocking): {exc}")
+
     asr_compact: list[dict[str, str]] = []
     for seg in asr_result.get("segments", [])[:20]:
         asr_compact.append({
@@ -758,6 +913,7 @@ def cmd_scan_video(args: "argparse.Namespace") -> int:  # noqa: F821, C901
         "detection_method": detection_method,
         "blocks": block_overview,
         "keyframe_batches": keyframe_batches,
+        "contact_sheets": contact_sheets,
         "asr_status": asr_result["status"],
         "asr_segments": asr_compact,
         "ocr_status": ocr_result["status"],
@@ -854,5 +1010,6 @@ __all__ = [
     "compute_visual_features",
     "estimate_motion_hint",
     "score_keyframe_candidates",
+    "build_contact_sheets",
     "cmd_scan_video",
 ]
