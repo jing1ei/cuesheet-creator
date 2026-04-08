@@ -158,6 +158,7 @@ from cc.scan import (  # noqa: F811
     run_ocr_on_frames,
     score_keyframe_candidates,
     build_contact_sheets,
+    deduplicate_similar_blocks,
 )
 from cc.merge import (  # noqa: F811
     _strategy_weight_multipliers,

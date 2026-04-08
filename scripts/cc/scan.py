@@ -460,6 +460,99 @@ def score_keyframe_candidates(
 
 
 # ---------------------------------------------------------------------------
+# Similar-frame deduplication (local CV, no LLM)
+# ---------------------------------------------------------------------------
+
+def deduplicate_similar_blocks(
+    cv2: Any,
+    np: Any,
+    draft_blocks: list[dict[str, Any]],
+    out_dir: Path,
+    similarity_threshold: float = 0.08,
+) -> tuple[list[dict[str, Any]], int]:
+    """Merge consecutive blocks whose keyframes are nearly identical.
+
+    Compares each block's keyframe to the next using histogram distance.
+    If the distance is below *similarity_threshold*, the blocks are merged
+    (the later block's time range is absorbed into the earlier one, and the
+    sharpest keyframe is kept).
+
+    This is a pure-CV operation — no LLM needed.  It dramatically reduces
+    block count in dense/frame-accurate scans where many consecutive frames
+    look the same (e.g. a static hold, a slow pan).
+
+    Returns (deduplicated_blocks, merge_count).
+    """
+    if len(draft_blocks) < 2:
+        return draft_blocks, 0
+
+    # Load keyframe images for comparison
+    frames: dict[str, Any] = {}  # block_id -> cv2 image
+    for block in draft_blocks:
+        kf = block.get("keyframe", "")
+        if not kf:
+            continue
+        kf_path = Path(kf) if Path(kf).is_absolute() else out_dir / kf
+        if kf_path.exists():
+            img = cv2.imread(str(kf_path))
+            if img is not None:
+                # Resize to small for fast comparison
+                h, w = img.shape[:2]
+                if w > 320:
+                    scale = 320.0 / w
+                    img = cv2.resize(img, (320, int(h * scale)))
+                frames[block["shot_block"]] = img
+
+    if len(frames) < 2:
+        return draft_blocks, 0
+
+    merged: list[dict[str, Any]] = []
+    current = draft_blocks[0]
+    merge_count = 0
+
+    for i in range(1, len(draft_blocks)):
+        next_block = draft_blocks[i]
+        curr_id = current["shot_block"]
+        next_id = next_block["shot_block"]
+
+        # If either block has no loaded frame, keep them separate
+        if curr_id not in frames or next_id not in frames:
+            merged.append(current)
+            current = next_block
+            continue
+
+        dist = compute_hist_distance(cv2, np, frames[curr_id], frames[next_id])
+
+        if dist < similarity_threshold:
+            # Merge: extend current block's time range, keep sharpest keyframe
+            current["end_seconds"] = next_block["end_seconds"]
+            current["end_time"] = next_block["end_time"]
+            # Keep the keyframe with better sharpness (if available)
+            curr_sharp = current.get("visual_features", {}).get("sharpness", 0) if current.get("visual_features") else 0
+            next_sharp = next_block.get("visual_features", {}).get("sharpness", 0) if next_block.get("visual_features") else 0
+            if next_sharp > curr_sharp:
+                current["keyframe"] = next_block.get("keyframe")
+                current["visual_features"] = next_block.get("visual_features")
+            # Merge motion hints: if either says camera-move, keep that
+            curr_motion = current.get("motion_hint", {}).get("motion_hint", "uncertain")
+            next_motion = next_block.get("motion_hint", {}).get("motion_hint", "uncertain")
+            if next_motion == "likely-camera-move" and curr_motion != "likely-camera-move":
+                current["motion_hint"] = next_block.get("motion_hint")
+            merge_count += 1
+        else:
+            merged.append(current)
+            current = next_block
+
+    merged.append(current)
+
+    # Renumber blocks
+    for idx, block in enumerate(merged, start=1):
+        block["shot_block"] = make_block_id(idx)
+
+    return merged, merge_count
+
+
+# ---------------------------------------------------------------------------
 # Contact sheet generation (batch keyframe grids)
 # ---------------------------------------------------------------------------
 
@@ -793,6 +886,19 @@ def cmd_scan_video(args: "argparse.Namespace") -> int:  # noqa: F821, C901
         finally:
             motion_capture.release()
 
+    # --- Deduplicate visually similar consecutive blocks ---
+    if draft_blocks and len(draft_blocks) > 1:
+        original_count = len(draft_blocks)
+        draft_blocks, dedup_merges = deduplicate_similar_blocks(
+            cv2, np, draft_blocks, out_dir,
+            similarity_threshold=0.08,
+        )
+        if dedup_merges > 0:
+            notes.append(
+                f"Deduplicated {dedup_merges} visually similar consecutive block(s): "
+                f"{original_count} → {len(draft_blocks)} blocks"
+            )
+
     # --- ASR ---
     asr_result: dict[str, Any] = {"status": "not-run", "segments": []}
     if args.asr:
@@ -1010,6 +1116,7 @@ __all__ = [
     "compute_visual_features",
     "estimate_motion_hint",
     "score_keyframe_candidates",
+    "deduplicate_similar_blocks",
     "build_contact_sheets",
     "cmd_scan_video",
 ]
