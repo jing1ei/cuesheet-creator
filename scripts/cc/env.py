@@ -116,15 +116,36 @@ def resolve_command_path(name: str) -> tuple[str | None, str | None]:
 
 
 def ffmpeg_install_hints() -> dict[str, Any]:
-    """Return structured install hints."""
+    """Return structured install hints with resolved paths (no placeholders)."""
     family = detect_platform_family()
+    ffmpeg_dir = LOCAL_FFMPEG_SEARCH_ROOT  # SKILL_ROOT / "tools" / "ffmpeg"
+    ffmpeg_dir_str = str(ffmpeg_dir)
+
+    # Ensure the target directory exists so users can paste the path directly
+    # into File Explorer without getting "path not found".
+    try:
+        ffmpeg_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass  # non-fatal; dir creation is a convenience, not a requirement
+
     if family == "windows":
         return {
-            "primary": "Download FFmpeg from https://www.gyan.dev/ffmpeg/builds/ (essentials build zip). Extract to <skill-root>/tools/ffmpeg/ so it contains <release-folder>/bin/ffmpeg.exe. No PATH changes needed — cuesheet-creator auto-detects it.",
+            "primary": (
+                f"Download FFmpeg from https://www.gyan.dev/ffmpeg/builds/ "
+                f"(get the **essentials build** zip). "
+                f"Extract the contents into:\n"
+                f"    {ffmpeg_dir_str}\n"
+                f"The final layout should be: {ffmpeg_dir_str}\\<release-folder>\\bin\\ffmpeg.exe "
+                f"(or {ffmpeg_dir_str}\\bin\\ffmpeg.exe). "
+                f"No PATH changes needed — cuesheet-creator auto-detects it."
+            ),
             "fallbacks": [
-                "If portable placement didn't work: check that <skill-root>/tools/ffmpeg/ contains either bin/ffmpeg.exe directly or <release-folder>/bin/ffmpeg.exe one level down.",
-                "Alternative: install via winget (`winget install Gyan.FFmpeg`), scoop, or choco. After install, close and reopen your PowerShell window, then re-check.",
-                f"Direct override: pass `--ffmpeg-path <path> --ffprobe-path <path>` to any command, or set {LOCAL_FFMPEG_BIN_ENV}=<directory>.",
+                f"If portable placement didn't work: check that {ffmpeg_dir_str} contains "
+                f"either bin\\ffmpeg.exe directly or <release-folder>\\bin\\ffmpeg.exe one level down.",
+                "Alternative: install via winget (`winget install Gyan.FFmpeg`), scoop, or choco. "
+                "After install, close and reopen your PowerShell window, then re-check.",
+                f"Direct override: pass `--ffmpeg-path <path> --ffprobe-path <path>` to any command, "
+                f"or set {LOCAL_FFMPEG_BIN_ENV}=<directory>.",
             ],
         }
     if family == "macos":
@@ -132,7 +153,7 @@ def ffmpeg_install_hints() -> dict[str, Any]:
             "primary": "Run `brew install ffmpeg` in Terminal. cuesheet-creator auto-detects /opt/homebrew/bin and /usr/local/bin.",
             "fallbacks": [
                 "If brew install succeeded but selfcheck still shows MISSING: close and reopen your Terminal window, then re-check.",
-                "Alternative: extract FFmpeg binaries into <skill-root>/tools/ffmpeg/bin/.",
+                f"Alternative: extract FFmpeg binaries into {ffmpeg_dir_str}/bin/.",
                 "Direct override: pass `--ffmpeg-path` / `--ffprobe-path` to any command.",
             ],
         }
@@ -140,7 +161,7 @@ def ffmpeg_install_hints() -> dict[str, Any]:
         "primary": "Install via package manager: `sudo apt install ffmpeg` (or your distro's equivalent).",
         "fallbacks": [
             "If install succeeded but selfcheck still shows MISSING: close and reopen your terminal, then re-check.",
-            "Alternative: extract FFmpeg binaries into <skill-root>/tools/ffmpeg/bin/.",
+            f"Alternative: extract FFmpeg binaries into {ffmpeg_dir_str}/bin/.",
             "Direct override: pass `--ffmpeg-path` / `--ffprobe-path` to any command.",
         ],
     }
