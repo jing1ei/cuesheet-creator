@@ -299,7 +299,23 @@ A cue sheet is **not delivery-ready** if any of these fail:
 | **sparse** | 5–8s | Slow-paced content with few visual changes per minute. Long holds, talking heads, static compositions. | Script writers, producers reviewing structure, podcast/tutorial editors |
 | **normal** | 2s (default) | Standard scene-level coverage. Captures major scene changes, character entrances, location shifts. | Directors, editors, producers, ad directors, game developers reviewing cinematics |
 | **dense** | 0.5–1s | Fast-paced content where every beat/cut matters. Rapid montage, choreography, musical sync points. | Music directors, trailer editors, MV directors, animation directors reviewing timing |
-| **frame-accurate** | 0.25–0.5s | Every action/impact/transient needs its own keyframe. The cue sheet is a frame-by-frame breakdown. | Sound designers, VFX supervisors, fight choreographers, voice-over directors syncing to lip movements |
+| **frame-accurate** | Two-pass workflow (see below) | Every action/impact/transient needs its own keyframe. NOT a single scan — too many blocks for one pass. | Sound designers, VFX supervisors, fight choreographers, voice-over directors syncing to lip movements |
+
+**frame-accurate is a TWO-PASS workflow, not a single scan:**
+
+> **Why**: A 2-minute video at 0.25s interval produces ~340 samples → ~57 contact sheets. This exceeds any reasonable agent session capacity. Even with contact sheets and Tier 2, the fill-in step cannot handle 340 blocks in one pass.
+
+> **How it works:**
+> 1. **Pass 1 (structural scan)**: Run `scan-video` at `dense` level (0.5–1s interval). This produces a manageable set of blocks (~60–120 for a 2-min video).
+> 2. **Pass 1 fill-in**: Agent fills all blocks at dense level. Delivers a draft cue sheet.
+> 3. **User identifies precision segments**: User or agent marks specific time ranges that need frame-accurate detail (e.g. "00:45–00:52 has dense foley events").
+> 4. **Pass 2 (precision re-scan)**: Run `scan-video` with `--start-time`/`--end-time` on each marked segment at 0.25–0.5s interval. This produces a small, focused set of blocks per segment.
+> 5. **Pass 2 fill-in**: Agent fills only the precision segments. Results can be merged into the main cue sheet or delivered as a supplementary detail sheet.
+
+> **Budget example**: A 2-min video with 3 precision segments of ~5s each:
+> - Pass 1: 60 blocks → 10 contact sheets → ~22 tool calls ✅
+> - Pass 2: 3 × ~15 blocks = 45 blocks → 8 contact sheets → ~18 tool calls ✅
+> - Total: ~40 tool calls across 2 sessions. Fully feasible.
 
 **How it works in Step 0:**
 
@@ -324,10 +340,10 @@ The user says "ok" → proceed. The user says "this is a storyboard, sparse is f
 
 | Duration | Additional adjustment |
 |---|---|
-| 0–3 min | Use the density level as-is |
-| 3–8 min | Use the density level as-is; warn if frame-accurate (will produce many blocks) |
-| 8–20 min | If dense/frame-accurate, suggest analyzing a segment first (`--start-time`/`--end-time`), or offer to do a structural pass first then refine |
-| 20+ min | Structural pass first (sparse), then user picks segments for dense/frame-accurate re-scan |
+| 0–3 min | Use the density level as-is. frame-accurate still uses two-pass workflow. |
+| 3–8 min | Use the density level as-is; for dense, warn that block count may be high (60-100+). frame-accurate: two-pass mandatory. |
+| 8–20 min | If dense, suggest analyzing a segment first (`--start-time`/`--end-time`), or offer to do a structural pass first then refine. frame-accurate: two-pass mandatory with user selecting segments after Pass 1. |
+| 20+ min | Structural pass first (sparse/normal), then user picks segments for dense re-scan. frame-accurate only on user-selected segments. |
 
 ### Step 1: Environment check
 
