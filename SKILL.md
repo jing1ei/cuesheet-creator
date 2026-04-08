@@ -249,22 +249,25 @@ A cue sheet is **not delivery-ready** if any of these fail:
 | **I2** | **Template**: Which template to use? | Determines columns, segmentation strategy, merge rules | Inferred from I1 answer |
 | **I3** | **Keyframes in export**: Should the Excel/Markdown deliverable include embedded keyframe images? | Some templates (music-director, script) default to text-only, but the user may still want visual reference | `yes` for production; **ask** for music-director and script |
 | **I4** | **ASR/OCR**: Is dialogue or on-screen text important? | Determines whether to enable --asr / --ocr during scan | Infer from context; if video has dialogue or UI text, suggest enabling |
-| **I5** | **Output language**: What language should the cue sheet content be written in? | Fill-in text (scene descriptions, mood, event, music_note, director_note) must match the target audience's language. Column headers/field names stay in English (they are structural). | **Infer from the language the user is speaking.** If user writes in Chinese → fill in Chinese. If English → English. If mixed or unclear → **ask**. |
+| **I5** | **Output language**: What language should the cue sheet content be written in? | Fill-in text (scene descriptions, mood, event, music_note, director_note) must match the target audience's language. Column headers/field names stay in English (they are structural). | **Always ask.** Do NOT guess from the user's input language — users often mix languages in conversation but have a specific preference for deliverables. |
 
 **Agent behavior — confirm what you can't infer:**
 
 1. If the user says *"make a cue sheet for this video"* with no further context → you know NOTHING about I1-I5. Ask:
-   > "Got the video. Before I start, I need to know:
+   > "Got the video. Before I start:
    > 1. Who is this cue sheet for? (director/producer collab, composer/scoring, script/story, or tell me your role)
    > 2. Should the Excel include keyframe images, or text-only?
-   > 3. What language should the cue sheet content be in? (e.g. English, 中文, or match your input language)"
+   > 3. What language for the cue sheet content? (e.g. English, 中文)"
 
-2. If the user says *"I need a music cue sheet"* → you can infer I1 (composer/scoring) and I2 (music-director). I5 = English (user spoke English). But I3 is ambiguous. Ask:
-   > "Using `music-director` template, content in English. Should the Excel include keyframe screenshots for visual reference, or keep it text-only?"
+2. If the user says *"I need a music cue sheet"* → you can infer I1 (composer/scoring) and I2 (music-director). But I3 and I5 are still unknown. Ask:
+   > "Using `music-director` template. Two quick questions:
+   > 1. Include keyframe screenshots in Excel, or text-only?
+   > 2. Content language? (English, 中文, etc.)"
 
-3. If the user says *"帮我做一个这个视频的 cue sheet，production 模板，要图"* → all intent is clear: I1=production, I2=production, I3=yes, I4=infer, I5=中文. Proceed without asking.
+3. If the user says *"帮我做一个这个视频的 cue sheet，production 模板，要图，中文"* → all intent is clear: I1=production, I2=production, I3=yes, I4=infer, I5=中文. Proceed without asking.
 
-4. If the user says *"just do it"* or *"default is fine"* → use `production` template with keyframes embedded, language = user's input language. Proceed without asking.
+4. If the user says *"just do it"* or *"default is fine"* → use `production` template with keyframes embedded. I5 is still unknown → ask language only:
+   > "Using production template with keyframes. What language for the content? (English, 中文)"
 
 **Rule: If intent is 100% clear from context, proceed immediately. If ANY ambiguity exists in I1-I5, ask ONCE with all unclear items in a single question. Never ask more than one round of questions.**
 
@@ -277,7 +280,7 @@ A cue sheet is **not delivery-ready** if any of these fail:
 | Delivery phase | Draft first, then final |
 | Output template | **Infer from intent, confirm if ambiguous** (fallback `production`) |
 | Embed keyframes in export | **yes** for production; **ask** for music-director/script |
-| Output language | **Match user's input language** (ask if ambiguous) |
+| Output language | **Always ask** (no default — do not guess) |
 | Analyze specific segment only | No |
 | Keep intermediate JSON | Keep `analysis.json` |
 | Install strategy | `check-only` |
