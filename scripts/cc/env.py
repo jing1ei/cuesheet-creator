@@ -131,17 +131,15 @@ def ffmpeg_install_hints() -> dict[str, Any]:
     if family == "windows":
         return {
             "primary": (
-                f"Download FFmpeg from https://www.gyan.dev/ffmpeg/builds/ "
-                f"(get the **essentials build** zip). "
-                f"Extract the contents into:\n"
+                f"Run `cuesheet-creator install-ffmpeg` (or `python scripts/cuesheet_creator.py install-ffmpeg`) "
+                f"to auto-download FFmpeg essentials build from gyan.dev. "
+                f"It will be extracted to:\n"
                 f"    {ffmpeg_dir_str}\n"
-                f"The final layout should be: {ffmpeg_dir_str}\\<release-folder>\\bin\\ffmpeg.exe "
-                f"(or {ffmpeg_dir_str}\\bin\\ffmpeg.exe). "
                 f"No PATH changes needed — cuesheet-creator auto-detects it."
             ),
             "fallbacks": [
-                f"If portable placement didn't work: check that {ffmpeg_dir_str} contains "
-                f"either bin\\ffmpeg.exe directly or <release-folder>\\bin\\ffmpeg.exe one level down.",
+                f"Manual download: get the essentials build zip from https://www.gyan.dev/ffmpeg/builds/ "
+                f"and extract to {ffmpeg_dir_str}\\. Layout: <release-folder>\\bin\\ffmpeg.exe.",
                 "Alternative: install via winget (`winget install Gyan.FFmpeg`), scoop, or choco. "
                 "After install, close and reopen your PowerShell window, then re-check.",
                 f"Direct override: pass `--ffmpeg-path <path> --ffprobe-path <path>` to any command, "
@@ -165,6 +163,177 @@ def ffmpeg_install_hints() -> dict[str, Any]:
             "Direct override: pass `--ffmpeg-path` / `--ffprobe-path` to any command.",
         ],
     }
+
+
+# ---------------------------------------------------------------------------
+# FFmpeg auto-download (Windows)
+# ---------------------------------------------------------------------------
+
+_FFMPEG_DOWNLOAD_URLS: dict[str, str] = {
+    "windows": "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
+    # macOS/Linux users should use their package manager; download is Windows-focused.
+}
+
+
+def download_ffmpeg(target_dir: Path | None = None, dry_run: bool = False) -> dict[str, Any]:
+    """Download and extract FFmpeg essentials build to the local tools directory.
+
+    Returns a status dict with keys: success, message, path, size_mb.
+    Prints progress to stderr so the user sees download activity.
+    """
+    import io
+    import urllib.request
+    import zipfile
+
+    family = detect_platform_family()
+    url = _FFMPEG_DOWNLOAD_URLS.get(family)
+    if not url:
+        return {
+            "success": False,
+            "message": f"Auto-download is only supported on Windows. On {family}, use your package manager (e.g. brew install ffmpeg).",
+            "path": None,
+        }
+
+    dest = target_dir or LOCAL_FFMPEG_SEARCH_ROOT
+    dest.mkdir(parents=True, exist_ok=True)
+
+    # Check if ffmpeg already exists
+    for candidate in [dest / "bin" / "ffmpeg.exe"]:
+        if candidate.exists():
+            return {
+                "success": True,
+                "message": f"FFmpeg already exists at {candidate}. No download needed.",
+                "path": str(candidate.parent),
+                "already_existed": True,
+            }
+    # Also check nested release folders
+    if dest.exists():
+        for child in dest.iterdir():
+            if child.is_dir() and (child / "bin" / "ffmpeg.exe").exists():
+                return {
+                    "success": True,
+                    "message": f"FFmpeg already exists at {child / 'bin' / 'ffmpeg.exe'}. No download needed.",
+                    "path": str(child / "bin"),
+                    "already_existed": True,
+                }
+
+    if dry_run:
+        return {
+            "success": True,
+            "message": f"[dry-run] Would download {url} and extract to {dest}",
+            "path": str(dest),
+            "dry_run": True,
+        }
+
+    print(f"  Downloading FFmpeg essentials from {url} ...", file=sys.stderr)
+
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "cuesheet-creator/1.4"})
+        response = urllib.request.urlopen(req, timeout=120)
+        total_size = int(response.headers.get("Content-Length", 0))
+        total_mb = total_size / (1024 * 1024) if total_size else 0
+
+        # Download with progress
+        downloaded = 0
+        buffer = io.BytesIO()
+        chunk_size = 256 * 1024  # 256KB chunks
+        last_pct = -1
+
+        while True:
+            chunk = response.read(chunk_size)
+            if not chunk:
+                break
+            buffer.write(chunk)
+            downloaded += len(chunk)
+            if total_size > 0:
+                pct = int(downloaded * 100 / total_size)
+                if pct != last_pct and pct % 5 == 0:
+                    mb_done = downloaded / (1024 * 1024)
+                    print(f"  [{pct:3d}%] {mb_done:.1f} / {total_mb:.1f} MB", file=sys.stderr)
+                    last_pct = pct
+            elif downloaded % (5 * 1024 * 1024) < chunk_size:
+                mb_done = downloaded / (1024 * 1024)
+                print(f"  {mb_done:.1f} MB downloaded ...", file=sys.stderr)
+
+        size_mb = downloaded / (1024 * 1024)
+        print(f"  Download complete ({size_mb:.1f} MB). Extracting ...", file=sys.stderr)
+
+        # Extract zip
+        buffer.seek(0)
+        with zipfile.ZipFile(buffer) as zf:
+            zf.extractall(dest)
+
+        # Verify extraction
+        ffmpeg_found = None
+        if (dest / "bin" / "ffmpeg.exe").exists():
+            ffmpeg_found = str(dest / "bin")
+        else:
+            for child in dest.iterdir():
+                if child.is_dir() and (child / "bin" / "ffmpeg.exe").exists():
+                    ffmpeg_found = str(child / "bin")
+                    break
+
+        if ffmpeg_found:
+            print(f"  FFmpeg installed successfully: {ffmpeg_found}", file=sys.stderr)
+            return {
+                "success": True,
+                "message": f"FFmpeg extracted to {ffmpeg_found}",
+                "path": ffmpeg_found,
+                "size_mb": round(size_mb, 1),
+            }
+        else:
+            return {
+                "success": False,
+                "message": f"Download and extraction completed but ffmpeg.exe not found in {dest}. Check the archive structure.",
+                "path": str(dest),
+                "size_mb": round(size_mb, 1),
+            }
+
+    except Exception as exc:
+        return {
+            "success": False,
+            "message": f"FFmpeg download failed: {exc}",
+            "path": None,
+        }
+
+
+def cmd_install_ffmpeg(args: argparse.Namespace) -> int:
+    """Download and install FFmpeg to the local tools directory."""
+    is_json = hasattr(args, "output_format") and args.output_format == "json"
+    dry_run = hasattr(args, "dry_run") and args.dry_run
+
+    # Check if already available
+    ffmpeg_path, source = resolve_command_path("ffmpeg")
+    if ffmpeg_path and not dry_run:
+        msg = f"FFmpeg already available at {ffmpeg_path} (source: {source}). No download needed."
+        if is_json:
+            print(json.dumps({"success": True, "message": msg, "path": ffmpeg_path, "source": source}))
+        else:
+            print(msg)
+        return 0
+
+    result = download_ffmpeg(dry_run=dry_run)
+
+    if is_json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        if result.get("success"):
+            print(result["message"])
+            if not dry_run and not result.get("already_existed"):
+                print("Re-running selfcheck to verify ...")
+                check = make_selfcheck_report()
+                ffmpeg_ok = check.get("external_commands", {}).get("ffmpeg", {}).get("available", False)
+                ffprobe_ok = check.get("external_commands", {}).get("ffprobe", {}).get("available", False)
+                if ffmpeg_ok and ffprobe_ok:
+                    print("  ffmpeg: OK")
+                    print("  ffprobe: OK")
+                else:
+                    print("  WARNING: selfcheck still cannot find ffmpeg/ffprobe after extraction.")
+                    print(f"  Check that {result.get('path')} contains ffmpeg.exe and ffprobe.exe.")
+        else:
+            print(f"ERROR: {result['message']}", file=sys.stderr)
+            return 1
+    return 0
 
 
 # ---------------------------------------------------------------------------

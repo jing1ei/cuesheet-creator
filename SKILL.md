@@ -175,7 +175,7 @@ A cue sheet is **not delivery-ready** if any of these fail:
 
 > **Windows / PowerShell note**: All `<video-path>` and `<out-dir>` arguments should be quoted if they contain spaces or special characters. If not running from the project root, use the full path to `scripts/cuesheet_creator.py`. Relative paths for `--video` and `--out-dir` are resolved from your current shell working directory, not the project directory.
 
-> **Windows FFmpeg note**: To avoid touching system PATH, you can extract a portable FFmpeg build under `<skill-root>/tools/ffmpeg/`. cuesheet-creator will auto-detect either `<skill-root>/tools/ffmpeg/bin/ffmpeg.exe` or one nested release folder such as `<skill-root>/tools/ffmpeg/ffmpeg-7.x-essentials_build/bin/ffmpeg.exe`. You can also set `CUESHEET_CREATOR_FFMPEG_BIN_DIR` for the current shell.
+> **Windows FFmpeg**: Run `cuesheet-creator install-ffmpeg` (or `python scripts/cuesheet_creator.py install-ffmpeg`) to auto-download FFmpeg with progress display. Alternatively, extract a portable FFmpeg build under `<skill-root>/tools/ffmpeg/`. cuesheet-creator will auto-detect either `<skill-root>/tools/ffmpeg/bin/ffmpeg.exe` or one nested release folder. You can also set `CUESHEET_CREATOR_FFMPEG_BIN_DIR` for the current shell.
 
 
 ---
@@ -270,7 +270,7 @@ python scripts/cuesheet_creator.py prepare-env --mode install-all --out-dir <out
 
 | Platform | What to tell the user |
 |---|---|
-| **Windows** | "Download the **essentials build** zip from https://www.gyan.dev/ffmpeg/builds/. Extract it and place the whole folder under `<skill-root>/tools/ffmpeg/` (final path should look like `tools/ffmpeg/ffmpeg-7.x-essentials_build/bin/ffmpeg.exe`). No PATH changes needed — cuesheet-creator will auto-detect it. Let me know when it's done and I'll verify." |
+| **Windows** | "Run `cuesheet-creator install-ffmpeg` to auto-download FFmpeg (shows download progress). If that doesn't work, download the **essentials build** zip from https://www.gyan.dev/ffmpeg/builds/ and extract it under `<skill-root>/tools/ffmpeg/`. No PATH changes needed. Let me know when it's done and I'll verify." |
 | **macOS** | "Run `brew install ffmpeg` in Terminal. Let me know when it's done and I'll verify." |
 | **Linux** | "Run `sudo apt install ffmpeg` (or the equivalent for your distro). Let me know when it's done and I'll verify." |
 

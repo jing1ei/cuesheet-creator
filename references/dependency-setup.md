@@ -179,12 +179,12 @@ python scripts/cuesheet_creator.py prepare-env --mode check-only --out-dir <out-
 
 ### Auto-install will NOT handle
 
-- Will not auto-install `ffmpeg`
-- Will not auto-install `ffprobe`
 - Will not modify system PATH
 - Will not choose a system package manager for the user
 
-> cuesheet-creator can still use a local portable FFmpeg copy from `<skill-root>/tools/ffmpeg/`, from the shell-local `CUESHEET_CREATOR_FFMPEG_BIN_DIR` override, or via `--ffmpeg-path` / `--ffprobe-path` CLI arguments.
+> **FFmpeg auto-download (Windows)**: Use `cuesheet-creator install-ffmpeg` to automatically download the FFmpeg essentials build from gyan.dev with download progress. The binary is extracted to `<skill-root>/tools/ffmpeg/` and auto-detected by all commands. On macOS/Linux, use your package manager instead.
+
+> cuesheet-creator can also use a local portable FFmpeg copy from `<skill-root>/tools/ffmpeg/`, from the shell-local `CUESHEET_CREATOR_FFMPEG_BIN_DIR` override, or via `--ffmpeg-path` / `--ffprobe-path` CLI arguments.
 
 
 ## Recommended execution order

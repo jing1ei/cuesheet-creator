@@ -54,27 +54,30 @@ pip install ".[ocr]"       # OCR primary engine only
 # 1. Check environment (no installs)
 cuesheet-creator prepare-env --mode check-only --out-dir ./output
 
-# 2. Install required Python packages
+# 2. Install FFmpeg (if not already on PATH)
+cuesheet-creator install-ffmpeg
+
+# 3. Install required Python packages
 cuesheet-creator prepare-env --mode install-required --out-dir ./output
 
-# 3. Scan a video
+# 4. Scan a video
 cuesheet-creator scan-video --video "path/to/video.mp4" --out-dir ./output
 
-# 4. Generate draft skeleton
+# 5. Generate draft skeleton
 cuesheet-creator draft-from-analysis \
     --analysis-json ./output/analysis.json \
     --output ./output/cue_sheet.md \
     --template production
 ```
 
-> **FFmpeg required**: If ffmpeg is not on your PATH, download `ffmpeg-release-essentials.zip` from [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) and extract so that `tools/ffmpeg/bin/ffmpeg.exe` exists inside the project folder. See [dependency-setup.md](references/dependency-setup.md) for details.
+> **FFmpeg**: On Windows, `cuesheet-creator install-ffmpeg` auto-downloads FFmpeg from [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) with progress display. On macOS/Linux, use your package manager (`brew install ffmpeg` / `sudo apt install ffmpeg`). See [dependency-setup.md](references/dependency-setup.md) for details.
 
 > **Running from source** (without pip install): Replace `cuesheet-creator` with `python scripts/cuesheet_creator.py` in all commands above.
 
 ## Prerequisites
 
 - **Python >= 3.10**
-- **ffmpeg / ffprobe** (not auto-installed — see [dependency-setup.md](references/dependency-setup.md))
+- **ffmpeg / ffprobe** (auto-downloadable on Windows via `install-ffmpeg`; see [dependency-setup.md](references/dependency-setup.md))
 - Core packages: `opencv-python-headless`, `numpy`, `Pillow`, `openpyxl` (auto-installed by `prepare-env`)
 - Optional: `scenedetect`, `faster-whisper`, `rapidocr-onnxruntime`
 
@@ -114,6 +117,7 @@ Video → scan-video → analysis.json + keyframes/
 | `prepare-env` | One-command env check + optional install + recheck |
 | `selfcheck` | Standalone environment check |
 | `install-deps` | Install missing Python packages (`--include-optional all\|scene\|asr\|ocr\|ocr-extra\|everything`) |
+| `install-ffmpeg` | Auto-download FFmpeg essentials build (Windows; shows download progress) |
 | `scan-video` | Extract frames + scene detection + visual features + optional ASR/OCR |
 | `draft-from-analysis` | Generate draft skeleton + JSON fill-in file with auto-prefilled fields |
 | `suggest-merges` | Auto-compute continuity scores, output suggested merge plan |

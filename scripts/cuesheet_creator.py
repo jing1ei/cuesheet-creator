@@ -29,6 +29,7 @@ from cc.constants import (
 from cc.draft import cmd_draft_from_analysis
 from cc.env import (
     cmd_install_deps,
+    cmd_install_ffmpeg,
     cmd_prepare_env,
     cmd_selfcheck,
 )
@@ -123,6 +124,7 @@ from cc.env import (  # noqa: F811
     check_command,
     check_module,
     collect_missing_python_packages,
+    download_ffmpeg,
     ensure_pip_available,
     ffmpeg_install_hints,
     iter_local_ffmpeg_bin_dirs,
@@ -196,6 +198,12 @@ def build_parser() -> argparse.ArgumentParser:
     install.add_argument("--upgrade-pip", action="store_true", help="Run pip install --upgrade pip first")
     install.add_argument("--fail-on-blocking", action="store_true", help="Return non-zero if blocking issues remain after install")
     install.set_defaults(func=cmd_install_deps)
+
+    # --- install-ffmpeg ---
+    install_ff = subparsers.add_parser("install-ffmpeg", help="Download and install FFmpeg to the local tools directory (Windows auto-download from gyan.dev)")
+    install_ff.add_argument("--dry-run", action="store_true", help="Show what would be downloaded without actually downloading")
+    install_ff.add_argument("--output-format", choices=["text", "json"], default="text")
+    install_ff.set_defaults(func=cmd_install_ffmpeg)
 
     # --- prepare-env ---
     prepare = subparsers.add_parser("prepare-env", help="One-command env check, install, and recheck")
