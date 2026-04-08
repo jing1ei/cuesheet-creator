@@ -113,7 +113,7 @@ Video → scan-video → analysis.json + keyframes/
 |---|---|
 | `prepare-env` | One-command env check + optional install + recheck |
 | `selfcheck` | Standalone environment check |
-| `install-deps` | Install missing Python packages (`--include-optional all\|scene\|asr\|ocr\|everything`) |
+| `install-deps` | Install missing Python packages (`--include-optional all\|scene\|asr\|ocr\|ocr-extra\|everything`) |
 | `scan-video` | Extract frames + scene detection + visual features + optional ASR/OCR |
 | `draft-from-analysis` | Generate draft skeleton + JSON fill-in file with auto-prefilled fields |
 | `suggest-merges` | Auto-compute continuity scores, output suggested merge plan |

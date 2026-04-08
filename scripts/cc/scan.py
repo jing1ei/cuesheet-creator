@@ -523,6 +523,13 @@ def cmd_scan_video(args: "argparse.Namespace") -> int:  # noqa: F821, C901
     sd_candidates, sd_err = detect_scenes_scenedetect(video_path, sd_content_threshold)
     if sd_candidates is not None:
         detection_method = "scenedetect"
+        if effective_start > 0.001 or effective_end < duration - 0.001:
+            notes.append(
+                "NOTE: PySceneDetect currently scans the full video file even when "
+                "--start-time/--end-time is set. Scene candidates are filtered to the "
+                "clip range afterward. For very long videos with small clip ranges, "
+                "this may be slower than expected."
+            )
         filtered = [
             c for c in sd_candidates
             if c["seconds"] >= effective_start - 0.05 and c["seconds"] <= effective_end + 0.05

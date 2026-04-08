@@ -171,7 +171,7 @@ A cue sheet is **not delivery-ready** if any of these fail:
 - **ffmpeg / ffprobe available either on PATH or from a local portable directory** (required; not auto-installed)
 - Optional: `scenedetect`, `faster-whisper`, `rapidocr` / `easyocr` / `paddleocr` (may require first-run model downloads)
 
-> **Install strategy**: `prepare-env` / `install-deps` auto-install packages with version constraints. Core package versions come from `requirements.txt`; optional component versions (scene/asr/ocr) are maintained in the script's `OPTIONAL_COMPONENTS` constant. For manual core install: `pip install -r requirements.txt`.
+> **Install strategy**: `prepare-env` / `install-deps` auto-install packages with version constraints. Core package versions come from `requirements.txt`; optional component versions (scene/asr/ocr) are maintained in `scripts/cc/constants.py` `OPTIONAL_COMPONENTS`. For manual core install: `pip install -r requirements.txt`.
 
 > **Windows / PowerShell note**: All `<video-path>` and `<out-dir>` arguments should be quoted if they contain spaces or special characters. If not running from the project root, use the full path to `scripts/cuesheet_creator.py`. Relative paths for `--video` and `--out-dir` are resolved from your current shell working directory, not the project directory.
 

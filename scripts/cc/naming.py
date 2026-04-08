@@ -286,14 +286,31 @@ def apply_naming_to_text(text: str, mapping: dict[str, str]) -> str:
     return result
 
 
-def apply_naming_to_json_structured(payload: dict[str, Any], mappings: dict[str, str]) -> tuple[dict[str, Any], int]:
-    """Apply naming overrides only to whitelisted fields in rows. Returns (new_payload, change_count).
-    Replacements are applied longest-key-first to avoid substring collisions."""
+def apply_naming_to_json_structured(
+    payload: dict[str, Any],
+    mappings: dict[str, str],
+    template: str | None = None,
+) -> tuple[dict[str, Any], int]:
+    """Apply naming overrides to rows in a structured JSON payload.
+
+    The set of fields to replace in is derived from:
+      1. Template metadata (naming_field=true columns) — for custom template parity
+      2. NAMING_REPLACE_FIELDS hardcoded whitelist — for broad free-text fields
+    The union of both sets is used, so custom naming fields are always covered.
+
+    Replacements are applied longest-key-first to avoid substring collisions.
+    """
     result = copy.deepcopy(payload)
     changes = 0
     sorted_mappings = sorted(mappings.items(), key=lambda kv: len(kv[0]), reverse=True)
+
+    # Build the effective set of fields to search for replacements
+    effective_template = template or payload.get("template") or "production"
+    template_naming_fields = _get_naming_fields_from_template(effective_template)
+    replace_fields = NAMING_REPLACE_FIELDS | template_naming_fields
+
     for row in result.get("rows", []):
-        for field in NAMING_REPLACE_FIELDS:
+        for field in replace_fields:
             value = row.get(field)
             if not isinstance(value, str):
                 continue
@@ -337,7 +354,8 @@ def cmd_apply_naming(args: "argparse.Namespace") -> int:  # noqa: F821
         if not cue_path.exists():
             raise FileNotFoundError(f"Cue JSON not found: {cue_path}")
         payload = read_json(cue_path)
-        new_payload, change_count = apply_naming_to_json_structured(payload, all_mappings)
+        effective_template = payload.get("template")
+        new_payload, change_count = apply_naming_to_json_structured(payload, all_mappings, template=effective_template)
         changes_detail.append({"file": str(cue_path), "type": "json", "field_changes": change_count})
         if change_count > 0:
             if not dry_run:

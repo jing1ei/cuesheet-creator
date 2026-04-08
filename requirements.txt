@@ -1,7 +1,7 @@
 # cuesheet-creator — core dependency versions
 # This file covers required (core) packages only.
 # Optional component versions (scene/asr/ocr) are maintained in
-# scripts/cuesheet_creator.py OPTIONAL_COMPONENTS and installed via
+# scripts/cc/constants.py OPTIONAL_COMPONENTS and installed via
 # prepare-env / install-deps commands.
 # Manual core install: pip install -r requirements.txt
 

@@ -7,7 +7,7 @@ name = "cuesheet-creator"
 version = "1.4.1"
 description = "Turn a single video into a collaborative cue sheet with keyframe screenshots and Excel/Markdown deliverables."
 readme = "README.md"
-license = {text = "Apache-2.0"}
+license = "Apache-2.0"
 requires-python = ">=3.10"
 authors = [{name = "jing1ei", email = "hi@lei.best"}]
 
