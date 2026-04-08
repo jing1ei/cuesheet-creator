@@ -117,3 +117,30 @@ jobs:
                   sys.exit(1)
               print(f'OK: {name}')
           "
+
+      - name: Verify template JSON sync (source vs package-data)
+        run: |
+          python -c "
+          import hashlib, sys
+          from pathlib import Path
+          source_dir = Path('templates')
+          pkg_dir = Path('scripts/cc/data/templates')
+          mismatches = []
+          for src_file in sorted(source_dir.glob('*.json')):
+              pkg_file = pkg_dir / src_file.name
+              if not pkg_file.exists():
+                  mismatches.append(f'MISSING in package data: {pkg_file}')
+                  continue
+              src_hash = hashlib.sha256(src_file.read_bytes()).hexdigest()
+              pkg_hash = hashlib.sha256(pkg_file.read_bytes()).hexdigest()
+              if src_hash != pkg_hash:
+                  mismatches.append(f'MISMATCH: {src_file.name} (source vs package-data)')
+          for pkg_file in sorted(pkg_dir.glob('*.json')):
+              if not (source_dir / pkg_file.name).exists():
+                  mismatches.append(f'EXTRA in package data (not in source): {pkg_file.name}')
+          if mismatches:
+              for m in mismatches:
+                  print(f'FAIL: {m}')
+              sys.exit(1)
+          print(f'OK: all template JSONs in sync')
+          "

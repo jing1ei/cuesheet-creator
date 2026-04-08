@@ -295,7 +295,14 @@ def cmd_merge_blocks(args: "argparse.Namespace") -> int:  # noqa: F821
             continue
         start_seconds = min(s["start_seconds"] for s in sources)
         end_seconds = max(s["end_seconds"] for s in sources)
-        keyframe = group.get("keyframe") or sources[0].get("keyframe")
+        # Pick keyframe: explicit override > sharpest source frame > first source
+        keyframe = group.get("keyframe")
+        if not keyframe:
+            best_src = max(
+                sources,
+                key=lambda s: (s.get("visual_features") or {}).get("sharpness", 0),
+            )
+            keyframe = best_src.get("keyframe") or sources[0].get("keyframe")
         merged_blocks.append({
             "shot_block": new_id,
             "start_seconds": start_seconds, "start_time": format_seconds(start_seconds),

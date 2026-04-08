@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from cc.constants import TEMPLATE_COLUMNS
+from cc.constants import DENSITY_PRESETS, TEMPLATE_COLUMNS
 from cc.env import resolve_command_path
 from cc.utils import (
     format_seconds,
@@ -446,17 +446,6 @@ def estimate_motion_hint(
     }
 
 
-def score_keyframe_candidates(
-    cv2: Any,
-    frames: list[tuple[float, Any, str]],
-) -> list[dict[str, Any]]:
-    """Score candidate frames by sharpness. Returns sorted list (best first)."""
-    scored: list[dict[str, Any]] = []
-    for seconds, frame, image_path in frames:
-        sharpness = compute_frame_sharpness(cv2, frame)
-        scored.append({"seconds": seconds, "image_path": image_path, "sharpness": round(sharpness, 2)})
-    scored.sort(key=lambda x: x["sharpness"], reverse=True)
-    return scored
 
 
 # ---------------------------------------------------------------------------
@@ -836,12 +825,21 @@ def cmd_scan_video(args: "argparse.Namespace") -> int:  # noqa: F821, C901
         raise RuntimeError(f"Effective clip range is zero: {format_seconds(effective_start)} - {format_seconds(effective_end)}")
 
     sample_interval = max(float(args.sample_interval), 0.2)
+    dedup_threshold = 0.08  # default
+    density_name = getattr(args, "density", None)
+    if density_name and density_name in DENSITY_PRESETS:
+        preset = DENSITY_PRESETS[density_name]
+        sample_interval = preset["sample_interval"]
+        dedup_threshold = preset["dedup_threshold"]
     max_samples = int(args.max_samples) if args.max_samples else None
 
     sampled_frames: list[dict[str, Any]] = []
     scene_candidates: list[dict[str, Any]] = []
     notes: list[str] = []
     detection_method = "histogram"
+
+    if density_name and density_name in DENSITY_PRESETS:
+        notes.append(f"Density preset: {density_name} (sample_interval={sample_interval}s, dedup_threshold={dedup_threshold})")
 
     sd_threshold = float(args.scene_threshold)
     sd_content_threshold = float(args.content_threshold) if hasattr(args, "content_threshold") and args.content_threshold else 27.0
@@ -893,7 +891,12 @@ def cmd_scan_video(args: "argparse.Namespace") -> int:  # noqa: F821, C901
         for idx, seconds in enumerate(times, start=1):
             frame = read_frame_at(cv2, capture, seconds)
             if frame is None:
-                notes.append(f"{format_seconds(seconds)} frame extraction failed, skipped")
+                # End-of-video frame extraction failures are normal (edge decode boundary).
+                # Only warn for mid-video failures that indicate real problems.
+                is_last_sample = (idx == len(times))
+                is_near_end = abs(seconds - effective_end) < sample_interval
+                if not (is_last_sample or is_near_end):
+                    notes.append(f"{format_seconds(seconds)} frame extraction failed, skipped")
                 continue
             frame = resize_frame(cv2, frame, max_width=args.max_width)
             image_name = f"frame_{idx:04d}_{int(seconds * 1000):010d}.jpg"
@@ -990,7 +993,7 @@ def cmd_scan_video(args: "argparse.Namespace") -> int:  # noqa: F821, C901
         original_count = len(draft_blocks)
         draft_blocks, dedup_merges = deduplicate_similar_blocks(
             cv2, np, draft_blocks, out_dir,
-            similarity_threshold=0.08,
+            similarity_threshold=dedup_threshold,
         )
         if dedup_merges > 0:
             notes.append(
@@ -1029,13 +1032,13 @@ def cmd_scan_video(args: "argparse.Namespace") -> int:  # noqa: F821, C901
             asr_result = {"status": "no-audio", "segments": [], "error": audio_err or "unknown"}
             notes.append(f"Cannot extract audio track, ASR skipped: {audio_err}")
 
-    # --- OCR ---
+    # --- OCR (runs on final draft_block keyframes, post-refinement/dedup) ---
     ocr_result: dict[str, Any] = {"status": "not-run", "detections": []}
     if args.ocr:
         notes.append("Attempting OCR text recognition...")
         ocr_frame_paths = []
-        for candidate in scene_candidates:
-            ip = candidate.get("image_path")
+        for block in draft_blocks:
+            ip = block.get("keyframe")
             if ip:
                 abs_ip = (out_dir / ip).resolve()
                 if abs_ip.exists():
@@ -1214,7 +1217,6 @@ __all__ = [
     "compute_frame_sharpness",
     "compute_visual_features",
     "estimate_motion_hint",
-    "score_keyframe_candidates",
     "refine_keyframe_selection",
     "deduplicate_similar_blocks",
     "build_contact_sheets",

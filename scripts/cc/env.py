@@ -322,8 +322,8 @@ def cmd_install_ffmpeg(args: argparse.Namespace) -> int:
             if not dry_run and not result.get("already_existed"):
                 print("Re-running selfcheck to verify ...")
                 check = make_selfcheck_report()
-                ffmpeg_ok = check.get("external_commands", {}).get("ffmpeg", {}).get("available", False)
-                ffprobe_ok = check.get("external_commands", {}).get("ffprobe", {}).get("available", False)
+                ffmpeg_ok = check.get("commands", {}).get("ffmpeg", {}).get("available", False)
+                ffprobe_ok = check.get("commands", {}).get("ffprobe", {}).get("available", False)
                 if ffmpeg_ok and ffprobe_ok:
                     print("  ffmpeg: OK")
                     print("  ffprobe: OK")

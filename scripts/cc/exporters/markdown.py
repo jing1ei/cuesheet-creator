@@ -55,16 +55,12 @@ def cmd_export_md(args: "argparse.Namespace") -> int:  # noqa: F821
     lines.append(header)
     lines.append(separator)
 
-    missing_keyframes_md: list[str] = []
-
     for row in rows:
         cells = []
         for col in columns:
             value = str(row.get(col, "") or row.get(f"_{col}", "") if col == "keyframe" else row.get(col, ""))
             if col == "keyframe" and value:
                 kf_path = resolve_keyframe_path(base_dir, value)
-                if kf_path and not kf_path.exists():
-                    missing_keyframes_md.append(row.get("shot_block", "?"))
                 try:
                     rel = os.path.relpath(str(kf_path or value), output_path.parent).replace("\\", "/")
                 except Exception:

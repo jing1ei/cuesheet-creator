@@ -389,7 +389,8 @@ def cmd_apply_naming(args: "argparse.Namespace") -> int:  # noqa: F821
                     print(f"[dry-run] Would update: {md_path}")
             replaced_count += 1
         else:
-            print(f"No changes: {md_path}")
+            if not is_json:
+                print(f"No changes: {md_path}")
 
     report = {
         "generated_at": dt.datetime.now().isoformat(timespec="seconds"),

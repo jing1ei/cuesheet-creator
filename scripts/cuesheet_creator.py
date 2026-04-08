@@ -24,6 +24,7 @@ if hasattr(sys.stderr, "reconfigure"):
 from cc.constants import (
     PREPARE_ENV_MODES,
     _CLI_COMMAND_OVERRIDES,
+    DENSITY_PRESETS,
     __version__,
 )
 from cc.draft import cmd_draft_from_analysis
@@ -156,7 +157,6 @@ from cc.scan import (  # noqa: F811
     resize_frame,
     run_asr_faster_whisper,
     run_ocr_on_frames,
-    score_keyframe_candidates,
     refine_keyframe_selection,
     build_contact_sheets,
     deduplicate_similar_blocks,
@@ -228,7 +228,8 @@ def build_parser() -> argparse.ArgumentParser:
     scan = subparsers.add_parser("scan-video", help="Extract frames and generate analysis.json")
     scan.add_argument("--video", type=resolved_path, required=True, help="Video file path")
     scan.add_argument("--out-dir", type=resolved_path, default=None, help="Output directory (default: <video-dir>/<video-name>_cuesheet/)")
-    scan.add_argument("--sample-interval", type=float, default=2.0, help="Sampling interval in seconds")
+    scan.add_argument("--density", choices=["sparse", "normal", "dense"], default=None, help="Density preset: sparse (5s), normal (2s, default), dense (0.5s). Overrides --sample-interval if set.")
+    scan.add_argument("--sample-interval", type=float, default=2.0, help="Sampling interval in seconds (overridden by --density if set)")
     scan.add_argument("--scene-threshold", type=float, default=0.35, help="Histogram cut threshold (fallback mode)")
     scan.add_argument("--content-threshold", type=float, default=27.0, help="PySceneDetect ContentDetector threshold")
     scan.add_argument("--max-samples", type=int, default=0, help="Max sample count, 0 for unlimited")

@@ -88,6 +88,15 @@ DEFAULT_COLUMN_WIDTHS = {
 
 SUPPORTED_OPTIONAL_GROUPS = {"asr", "ocr", "ocr-extra", "scene"}
 
+# Density presets: map high-level intent to mechanical scan parameters.
+# "frame-accurate" is intentionally excluded — it requires the two-pass workflow
+# described in SKILL.md and cannot be achieved with a single scan-video invocation.
+DENSITY_PRESETS: dict[str, dict[str, float]] = {
+    "sparse": {"sample_interval": 5.0, "dedup_threshold": 0.10},
+    "normal": {"sample_interval": 2.0, "dedup_threshold": 0.08},
+    "dense":  {"sample_interval": 0.5, "dedup_threshold": 0.06},
+}
+
 PREPARE_ENV_MODES = {
     "check-only": set(),
     "install-required": set(),
