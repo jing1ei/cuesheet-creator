@@ -294,56 +294,76 @@ A cue sheet is **not delivery-ready** if any of these fail:
 
 **Four density levels:**
 
-| Level | `--sample-interval` | When to suggest | Who typically needs this |
+| Level | `--sample-interval` | What it captures | Typical use cases |
 |---|---|---|---|
-| **sparse** | 5–8s | Slow-paced content with few visual changes per minute. Long holds, talking heads, static compositions. | Script writers, producers reviewing structure, podcast/tutorial editors |
-| **normal** | 2s (default) | Standard scene-level coverage. Captures major scene changes, character entrances, location shifts. | Directors, editors, producers, ad directors, game developers reviewing cinematics |
-| **dense** | 0.5–1s | Fast-paced content where every beat/cut matters. Rapid montage, choreography, musical sync points. | Music directors, trailer editors, MV directors, animation directors reviewing timing |
-| **frame-accurate** | Two-pass workflow (see below) | Every action/impact/transient needs its own keyframe. NOT a single scan — too many blocks for one pass. | Sound designers, VFX supervisors, fight choreographers, voice-over directors syncing to lip movements |
+| **sparse** | 5–8s | Major narrative beats, scene/location changes, panel switches | Storyboard review, script discussion, live manga breakdown, podcast/tutorial structure, producer rough-cut review |
+| **normal** | 2s (default) | Scene-level changes, character entrances, setup shifts, camera coverage | Director/editor collaboration, production coordination, ad review, game cinematic review, documentary structure |
+| **dense** | 0.5–1s | Every cut, beat, sync point, rhythm change, choreography beat | Music scoring sync, trailer editing, MV direction, animation timing review, fight choreography, dance sequence |
+| **frame-accurate** | Two-pass workflow (see below) | Every action, impact, transient, lip-sync frame, VFX event | Sound design breakdown, VFX shot detail, voice-over lip-sync, foley spotting, fight sound design |
 
-**frame-accurate is a TWO-PASS workflow, not a single scan:**
+> **Density is about WHAT NEEDS ITS OWN ROW, not about video type.** A short-film director may want `normal` for the whole film but `dense` for the climax fight. A sound designer may want `dense` as the base but `frame-accurate` on impact-heavy segments. Any role can use any density — the template's `recommended_density` is just the starting suggestion.
 
-> **Why**: A 2-minute video at 0.25s interval produces ~340 samples → ~57 contact sheets. This exceeds any reasonable agent session capacity. Even with contact sheets and Tier 2, the fill-in step cannot handle 340 blocks in one pass.
+### Precision refinement (two-pass workflow)
 
-> **How it works:**
-> 1. **Pass 1 (structural scan)**: Run `scan-video` at `dense` level (0.5–1s interval). This produces a manageable set of blocks (~60–120 for a 2-min video).
-> 2. **Pass 1 fill-in**: Agent fills all blocks at dense level. Delivers a draft cue sheet.
-> 3. **User identifies precision segments**: User or agent marks specific time ranges that need frame-accurate detail (e.g. "00:45–00:52 has dense foley events").
-> 4. **Pass 2 (precision re-scan)**: Run `scan-video` with `--start-time`/`--end-time` on each marked segment at 0.25–0.5s interval. This produces a small, focused set of blocks per segment.
-> 5. **Pass 2 fill-in**: Agent fills only the precision segments. Results can be merged into the main cue sheet or delivered as a supplementary detail sheet.
+> **This applies to ALL roles, not just sound designers.** Whenever the initial scan doesn't capture enough detail for specific segments, the agent should offer a precision re-scan.
 
-> **Budget example**: A 2-min video with 3 precision segments of ~5s each:
-> - Pass 1: 60 blocks → 10 contact sheets → ~22 tool calls ✅
-> - Pass 2: 3 × ~15 blocks = 45 blocks → 8 contact sheets → ~18 tool calls ✅
-> - Total: ~40 tool calls across 2 sessions. Fully feasible.
+**When to trigger:**
+- User says *"this block needs more detail"* or *"the keyframes don't show the actual moment of X"*
+- Template recommends `frame-accurate` (e.g. sound-design)
+- User's role requires action-level precision for specific segments (VFX supervisor on a shot, VO director on a dialogue scene, editor on a montage)
+- Agent notices a block spans a long time range but has complex visual content
 
-**How it works in Step 0:**
+**How it works (any density → higher density on selected segments):**
+> 1. **Pass 1 (full-video scan)**: Run `scan-video` at the suggested density (sparse/normal/dense). Produces a complete cue sheet draft.
+> 2. **Pass 1 deliverable**: Agent fills and exports the draft. User reviews it.
+> 3. **User identifies segments needing more detail**: User marks specific time ranges — or agent suggests them based on block duration/complexity. Examples:
+>    - Film director: *"00:45–00:52 needs per-cut detail for the fight"*
+>    - Music director: *"the bridge at 01:20–01:35 needs beat-by-beat sync"*
+>    - Sound designer: *"the explosion sequence 00:30–00:38 needs every foley event"*
+>    - VFX supervisor: *"02:10–02:15 needs frame-level for the morphing shot"*
+>    - VO director: *"the monologue 01:00–01:45 needs lip-sync level detail"*
+> 4. **Pass 2 (precision re-scan)**: Run `scan-video` with `--start-time`/`--end-time` at a higher density (typically 0.25–0.5s). This produces a focused, manageable set of blocks.
+> 5. **Pass 2 deliverable**: Agent fills the precision segments and delivers as a supplementary detail sheet or merged into the main cue sheet.
 
-The agent already knows I1 (purpose) and I2 (template). From these, it **infers** a density suggestion:
+**Budget reality check** (why single-pass frame-accurate doesn't work):
 
-| Template / Role | Suggested density | Reasoning |
+| Video length | frame-accurate single-pass (0.25s) | Two-pass approach |
 |---|---|---|
-| `script` | sparse | Story structure, not per-cut detail |
-| `production` | normal | Scene-level collaboration |
-| `music-director` | dense | Music sync points matter |
-| `sound-design` (custom) | frame-accurate | Every foley/SFX event needs a keyframe |
-| User says "trailer" or "action" | dense | Fast cuts |
-| User says "storyboard" or "manga" | sparse | Panel-level, not frame-level |
+| 1 min | 240 blocks, 40 contact sheets → ❌ too many | Pass 1 dense: 60 blocks ✅ + Pass 2 on 3 segments: ~45 blocks ✅ |
+| 2 min | 480 blocks → ❌ | Pass 1: ~120 blocks ✅ + Pass 2: ~45 blocks ✅ |
+| 5 min | 1200 blocks → ❌❌ | Pass 1: ~300 blocks (split into 2 sessions) + Pass 2 on segments ✅ |
 
-**Agent presents the suggestion as part of the confirmation, not as a separate question:**
+**The agent MUST use two-pass when `frame-accurate` is needed. Single-pass frame-accurate is never offered.**
 
-> "Using `sound-design` template, content in 中文, keyframes embedded. For sound design I'd recommend **frame-accurate** density (keyframe every 0.25–0.5s) so each impact/foley event gets its own reference frame. OK, or would you prefer less dense?"
+### Density inference rules
+
+The agent infers density from I1 (purpose), I2 (template), and context clues:
+
+| Signal | Suggested density |
+|---|---|
+| Template has `recommended_density` field | Use that value |
+| User mentions "storyboard", "manga", "rough cut", "structure" | sparse |
+| User mentions "review", "collaboration", "production", "edit" | normal |
+| User mentions "trailer", "MV", "music video", "choreography", "animation timing" | dense |
+| User mentions "sound design", "foley", "VFX", "lip sync", "frame by frame" | frame-accurate (two-pass) |
+| No clear signal from context | Use template's `recommended_density`, or `normal` as fallback |
+
+**Agent presents the suggestion as part of the Step 0 confirmation, not as a separate question:**
+
+> "Using `production` template, keyframes embedded. I'd suggest **normal** density (keyframe every 2s) for scene-level coverage. If specific segments need more detail, we can do a precision re-scan after the first pass. OK?"
+
+> "Using `sound-design` template, content in 中文. I'd suggest **dense** as the base scan (0.5s interval), then **precision re-scan** on segments you flag for foley detail. OK, or start with normal first?"
 
 The user says "ok" → proceed. The user says "this is a storyboard, sparse is fine" → adjust.
 
-**This replaces the old "video length strategy".** Length still matters but as a secondary factor:
+**Length-based adjustments:**
 
-| Duration | Additional adjustment |
+| Duration | Adjustment |
 |---|---|
-| 0–3 min | Use the density level as-is. frame-accurate still uses two-pass workflow. |
-| 3–8 min | Use the density level as-is; for dense, warn that block count may be high (60-100+). frame-accurate: two-pass mandatory. |
-| 8–20 min | If dense, suggest analyzing a segment first (`--start-time`/`--end-time`), or offer to do a structural pass first then refine. frame-accurate: two-pass mandatory with user selecting segments after Pass 1. |
-| 20+ min | Structural pass first (sparse/normal), then user picks segments for dense re-scan. frame-accurate only on user-selected segments. |
+| 0–3 min | Use the density level as-is. Two-pass if frame-accurate. |
+| 3–8 min | Warn if dense produces many blocks (100+). Two-pass if frame-accurate. |
+| 8–20 min | For dense: suggest full scan OR segment-first. Two-pass mandatory for frame-accurate — user selects segments after Pass 1. |
+| 20+ min | Structural pass first (sparse/normal). User picks segments for dense re-scan. Frame-accurate only on user-selected segments. |
 
 ### Step 1: Environment check
 
