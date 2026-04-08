@@ -2,6 +2,8 @@
   "name": "production",
   "schema_version": 2,
   "description": "For director, producer, art, cinematography, and sound cross-department collaboration",
+  "recommended_density": "normal",
+  "density_rationale": "Scene-level coverage is sufficient for cross-department collaboration. Each scene change, major character entrance, or setup shift gets a block.",
 
   "perspective": "Prioritize what needs cross-department alignment in this segment. Clarify space, composition, relationships, execution risks. director_note covers camera language and production coordination points — no vague commentary.",
 

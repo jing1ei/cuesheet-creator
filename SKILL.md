@@ -286,13 +286,48 @@ A cue sheet is **not delivery-ready** if any of these fail:
 | Install strategy | `check-only` |
 | pip mirror | None (only if user specifies) |
 
-**Keyframe embedding override**: When the user requests keyframes in a template that doesn't have a `keyframe` column (e.g. music-director, script), the agent should pass `--template production` to `build-xlsx` for the export step ONLY (the fill-in still uses the original template's perspective and columns). Alternatively, use the `--base-dir` flag and ensure `keyframe` paths are preserved in `final_cues.json` even for non-production templates. See Step 4 for details.
+**Keyframe embedding override**: When the user requests keyframes in a template that doesn't have a `keyframe` column (e.g. music-director, script), the agent should pass `--embed-keyframes` to `build-xlsx` / `export-md` for the export step. The fill-in still uses the original template's perspective and columns. See Step 4 for details.
 
-Video length strategy:
+### Keyframe density (the agent suggests, the user confirms)
 
-- 0–8 min: Full analysis by default
-- 8–20 min: Coarse cut first, then refine
-- 20+ min: Structural draft first, adjust `--sample-interval`
+> **Do NOT present a video-type picklist.** Instead, the agent assesses what density is appropriate based on context (user's role, template, video description) and **proposes** a density level. The user confirms or adjusts.
+
+**Four density levels:**
+
+| Level | `--sample-interval` | When to suggest | Who typically needs this |
+|---|---|---|---|
+| **sparse** | 5–8s | Slow-paced content with few visual changes per minute. Long holds, talking heads, static compositions. | Script writers, producers reviewing structure, podcast/tutorial editors |
+| **normal** | 2s (default) | Standard scene-level coverage. Captures major scene changes, character entrances, location shifts. | Directors, editors, producers, ad directors, game developers reviewing cinematics |
+| **dense** | 0.5–1s | Fast-paced content where every beat/cut matters. Rapid montage, choreography, musical sync points. | Music directors, trailer editors, MV directors, animation directors reviewing timing |
+| **frame-accurate** | 0.25–0.5s | Every action/impact/transient needs its own keyframe. The cue sheet is a frame-by-frame breakdown. | Sound designers, VFX supervisors, fight choreographers, voice-over directors syncing to lip movements |
+
+**How it works in Step 0:**
+
+The agent already knows I1 (purpose) and I2 (template). From these, it **infers** a density suggestion:
+
+| Template / Role | Suggested density | Reasoning |
+|---|---|---|
+| `script` | sparse | Story structure, not per-cut detail |
+| `production` | normal | Scene-level collaboration |
+| `music-director` | dense | Music sync points matter |
+| `sound-design` (custom) | frame-accurate | Every foley/SFX event needs a keyframe |
+| User says "trailer" or "action" | dense | Fast cuts |
+| User says "storyboard" or "manga" | sparse | Panel-level, not frame-level |
+
+**Agent presents the suggestion as part of the confirmation, not as a separate question:**
+
+> "Using `sound-design` template, content in 中文, keyframes embedded. For sound design I'd recommend **frame-accurate** density (keyframe every 0.25–0.5s) so each impact/foley event gets its own reference frame. OK, or would you prefer less dense?"
+
+The user says "ok" → proceed. The user says "this is a storyboard, sparse is fine" → adjust.
+
+**This replaces the old "video length strategy".** Length still matters but as a secondary factor:
+
+| Duration | Additional adjustment |
+|---|---|
+| 0–3 min | Use the density level as-is |
+| 3–8 min | Use the density level as-is; warn if frame-accurate (will produce many blocks) |
+| 8–20 min | If dense/frame-accurate, suggest analyzing a segment first (`--start-time`/`--end-time`), or offer to do a structural pass first then refine |
+| 20+ min | Structural pass first (sparse), then user picks segments for dense/frame-accurate re-scan |
 
 ### Step 1: Environment check
 

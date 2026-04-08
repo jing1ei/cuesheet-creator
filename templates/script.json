@@ -2,6 +2,8 @@
   "name": "script",
   "schema_version": 2,
   "description": "For story discussion and early-stage breakdown",
+  "recommended_density": "sparse",
+  "density_rationale": "Story discussion needs narrative-beat level coverage, not per-cut detail. Each major story event or location change gets a block.",
 
   "perspective": "State what happens first, then who is present and where. Do not over-load with camera technical info.",
 

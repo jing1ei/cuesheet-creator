@@ -2,6 +2,8 @@
   "name": "music-director",
   "schema_version": 2,
   "description": "For composer / scoring communication",
+  "recommended_density": "dense",
+  "density_rationale": "Music sync requires beat-level coverage. Every mood shift, rhythm change, and transition point should have a block with timing reference.",
 
   "perspective": "Judge mood and rhythmic function first. Specify music entry, change, and exit points. Instrumentation suggestions should be concrete (e.g. 'pizzicato bass + granular electronic pulse', not 'add some tension').",
 
