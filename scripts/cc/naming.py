@@ -336,16 +336,23 @@ def cmd_apply_naming(args: "argparse.Namespace") -> int:  # noqa: F821
         mappings = overrides.get(category, {})
         all_mappings.update(mappings)
 
+    dry_run = bool(args.dry_run)
+    is_json = hasattr(args, "output_format") and args.output_format == "json"
+
     if not all_mappings:
-        print("Naming overrides empty, no replacements needed.")
+        if is_json:
+            print(json.dumps({"status": "no-op", "message": "Naming overrides empty, no replacements needed.", "files_updated": 0}))
+        else:
+            print("Naming overrides empty, no replacements needed.")
         return 0
 
     if not args.cue_json and not args.md:
-        print("ERROR: At least one of --cue-json or --md must be specified.", file=sys.stderr)
+        msg = "At least one of --cue-json or --md must be specified."
+        if is_json:
+            print(json.dumps({"status": "error", "message": msg}))
+        else:
+            print(f"ERROR: {msg}", file=sys.stderr)
         return 1
-
-    dry_run = bool(args.dry_run)
-    is_json = hasattr(args, "output_format") and args.output_format == "json"
     replaced_count = 0
     changes_detail: list[dict[str, Any]] = []
 

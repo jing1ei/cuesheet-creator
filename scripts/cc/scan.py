@@ -369,7 +369,11 @@ def compute_visual_features(cv2: Any, np: Any, frame: Any) -> dict[str, Any]:
     brightness = float(np.mean(gray))
     contrast = float(np.std(gray))
     saturation = float(np.mean(hsv[:, :, 1]))
-    dominant_hue = float(np.mean(hsv[:, :, 0]))
+    # Dominant hue: use histogram mode instead of mean to handle bimodal distributions
+    # (e.g., a red+blue scene would average to green with np.mean, but the mode finds
+    # the actual most frequent hue correctly)
+    hue_hist = cv2.calcHist([hsv], [0], None, [180], [0, 180])
+    dominant_hue = float(np.argmax(hue_hist))
     if brightness < 80:
         tone = "dark"
     elif brightness > 170:
@@ -502,10 +506,11 @@ def refine_keyframe_selection(
             # Ensure we also sample close to the original keyframe time
             # (the cut point is often important even if blurry)
 
-            best_sharpness = -1.0
+            best_score = -1.0
             best_frame = None
             best_seconds = start
             current_sharpness = block.get("visual_features", {}).get("sharpness", 0.0) if block.get("visual_features") else 0.0
+            mid_time = (start + end) / 2.0
 
             for ts in timestamps:
                 frame = read_frame_at(cv2, capture, ts)
@@ -513,13 +518,20 @@ def refine_keyframe_selection(
                     continue
                 frame = resize_frame(cv2, frame, max_width=max_width)
                 sharpness = compute_frame_sharpness(cv2, frame)
-                if sharpness > best_sharpness:
-                    best_sharpness = sharpness
+                # Mid-block representativeness bias: frames closer to block center
+                # get up to 10% bonus. This favors "representative" frames over
+                # edge frames that may be transitional.
+                distance_from_mid = abs(ts - mid_time) / max(span / 2.0, 0.01)
+                mid_bonus = 1.0 + 0.10 * (1.0 - min(distance_from_mid, 1.0))
+                score = sharpness * mid_bonus
+                if score > best_score:
+                    best_score = score
                     best_frame = frame
                     best_seconds = ts
 
-            # Only upgrade if the new frame is meaningfully sharper (>15% better)
-            if best_frame is not None and best_sharpness > current_sharpness * 1.15:
+            # Only upgrade if the new frame is meaningfully sharper (>15% better raw sharpness)
+            best_raw_sharpness = compute_frame_sharpness(cv2, best_frame) if best_frame is not None else 0.0
+            if best_frame is not None and best_raw_sharpness > current_sharpness * 1.15:
                 image_name = f"frame_best_{block['shot_block']}_{int(best_seconds * 1000):010d}.jpg"
                 image_path = keyframe_dir / image_name
                 ok = cv2.imwrite(str(image_path), best_frame)
@@ -528,9 +540,9 @@ def refine_keyframe_selection(
                     block["keyframe"] = rel_path
                     # Update visual features with the new frame
                     block["visual_features"] = compute_visual_features(cv2, np, best_frame)
-                    block["visual_features"]["sharpness"] = round(best_sharpness, 2)
+                    block["visual_features"]["sharpness"] = round(best_raw_sharpness, 2)
                     block["_keyframe_refined"] = True
-                    block["_refinement_gain"] = round(best_sharpness / max(current_sharpness, 0.01), 2)
+                    block["_refinement_gain"] = round(best_raw_sharpness / max(current_sharpness, 0.01), 2)
                     upgraded += 1
     finally:
         capture.release()
@@ -844,15 +856,46 @@ def cmd_scan_video(args: "argparse.Namespace") -> int:  # noqa: F821, C901
     sd_threshold = float(args.scene_threshold)
     sd_content_threshold = float(args.content_threshold) if hasattr(args, "content_threshold") and args.content_threshold else 27.0
 
-    sd_candidates, sd_err = detect_scenes_scenedetect(video_path, sd_content_threshold)
+    # Clip-range optimization: pre-trim video for scenedetect to avoid scanning full file
+    is_clip = effective_start > 0.001 or effective_end < duration - 0.001
+    clip_video_path = video_path
+    clip_offset = 0.0
+    _clip_temp_path: Path | None = None
+    if is_clip:
+        ffmpeg_path_for_trim, _ = resolve_command_path("ffmpeg")
+        if ffmpeg_path_for_trim:
+            _clip_temp_path = out_dir / "_clip_temp.mp4"
+            clip_cmd = [
+                ffmpeg_path_for_trim, "-y",
+                "-ss", format_seconds(effective_start),
+                "-i", str(video_path),
+                "-t", f"{effective_duration:.3f}",
+                "-c", "copy",
+                str(_clip_temp_path),
+            ]
+            trim_result = run_command(clip_cmd)
+            if trim_result.returncode == 0 and _clip_temp_path.exists():
+                clip_video_path = _clip_temp_path
+                clip_offset = effective_start
+                notes.append(
+                    f"Pre-trimmed clip ({format_seconds(effective_start)} - {format_seconds(effective_end)}) "
+                    f"for faster scene detection"
+                )
+            else:
+                _clip_temp_path = None  # fallback to full-file scan
+
+    sd_candidates, sd_err = detect_scenes_scenedetect(clip_video_path, sd_content_threshold)
     if sd_candidates is not None:
         detection_method = "scenedetect"
-        if effective_start > 0.001 or effective_end < duration - 0.001:
+        if is_clip and clip_offset > 0:
+            # Shift scenedetect timestamps back to original video time
+            for c in sd_candidates:
+                c["seconds"] = round(c["seconds"] + clip_offset, 3)
+                c["timecode"] = format_seconds(c["seconds"])
+        if is_clip and _clip_temp_path is None:
             notes.append(
-                "NOTE: PySceneDetect currently scans the full video file even when "
-                "--start-time/--end-time is set. Scene candidates are filtered to the "
-                "clip range afterward. For very long videos with small clip ranges, "
-                "this may be slower than expected."
+                "NOTE: PySceneDetect scanned the full video file (pre-trim failed or ffmpeg unavailable). "
+                "Scene candidates are filtered to the clip range afterward."
             )
         filtered = [
             c for c in sd_candidates
@@ -930,7 +973,7 @@ def cmd_scan_video(args: "argparse.Namespace") -> int:  # noqa: F821, C901
                     })
             prev_frame = frame
     finally:
-        capture.release()
+        pass  # Keep capture open for motion estimation below
 
     if detection_method == "scenedetect":
         for candidate in scene_candidates:
@@ -966,18 +1009,18 @@ def cmd_scan_video(args: "argparse.Namespace") -> int:  # noqa: F821, C901
         print("ERROR: No draft blocks could be generated from this video. "
               "Check scene detection settings or try a different --sample-interval.", file=sys.stderr)
 
+    # Reuse main capture for motion estimation (avoid re-opening video file)
     if draft_blocks:
-        motion_capture = cv2.VideoCapture(str(video_path))
-        try:
-            if motion_capture.isOpened():
-                for block in draft_blocks:
-                    hint = estimate_motion_hint(
-                        cv2, np, motion_capture,
-                        block["start_seconds"], block["end_seconds"],
-                    )
-                    block["motion_hint"] = hint
-        finally:
-            motion_capture.release()
+        if capture.isOpened():
+            for block in draft_blocks:
+                hint = estimate_motion_hint(
+                    cv2, np, capture,
+                    block["start_seconds"], block["end_seconds"],
+                )
+                block["motion_hint"] = hint
+
+    # Release the main capture now — no longer needed
+    capture.release()
 
     # --- Refine keyframe selection (pick sharpest frame per block) ---
     if draft_blocks:
@@ -989,7 +1032,10 @@ def cmd_scan_video(args: "argparse.Namespace") -> int:  # noqa: F821, C901
             notes.append(f"Refined keyframes for {refined_count}/{len(draft_blocks)} block(s) — replaced with sharper frames")
 
     # --- Deduplicate visually similar consecutive blocks ---
-    if draft_blocks and len(draft_blocks) > 1:
+    skip_dedup = getattr(args, "no_dedup", False)
+    if skip_dedup:
+        notes.append("Visual deduplication disabled (--no-dedup)")
+    elif draft_blocks and len(draft_blocks) > 1:
         original_count = len(draft_blocks)
         draft_blocks, dedup_merges = deduplicate_similar_blocks(
             cv2, np, draft_blocks, out_dir,
@@ -1151,7 +1197,6 @@ def cmd_scan_video(args: "argparse.Namespace") -> int:  # noqa: F821, C901
             },
         },
         "scene_candidates": scene_candidates,
-        "sampled_frames": sampled_frames,
         "draft_blocks": draft_blocks,
         "asr": asr_result,
         "ocr": ocr_result,
@@ -1162,6 +1207,13 @@ def cmd_scan_video(args: "argparse.Namespace") -> int:  # noqa: F821, C901
             "scene_detection": detection_method,
         },
     }
+
+    # Include full sampled_frames metadata only when requested (saves 40-60% of JSON size on dense scans)
+    keep_all = getattr(args, "keep_all_frames", False)
+    if keep_all:
+        analysis["sampled_frames"] = sampled_frames
+    else:
+        analysis["sampled_frame_count"] = len(sampled_frames)
 
     analysis_path = out_dir / "analysis.json"
     write_json(analysis_path, analysis)
@@ -1175,9 +1227,9 @@ def cmd_scan_video(args: "argparse.Namespace") -> int:  # noqa: F821, C901
         "stage": "scan-video",
         "output_directory": str(out_dir),
         "generated": generated_files,
-        "keyframe_count": len(sampled_frames),
-        "scene_candidates": len(scene_candidates),
-        "draft_blocks": len(draft_blocks),
+        "sampled_frame_count": len(sampled_frames),
+        "scene_candidate_count": len(scene_candidates),
+        "draft_block_count": len(draft_blocks),
         "detection_method": detection_method,
         "warnings": [n for n in notes if "unavailable" in n.lower() or "failed" in n.lower() or "degraded" in n.lower() or "skipped" in n.lower()],
         "notes": notes,
@@ -1198,6 +1250,13 @@ def cmd_scan_video(args: "argparse.Namespace") -> int:  # noqa: F821, C901
             for w in summary["warnings"]:
                 print(f"  WARNING: {w}")
         print("Next step: draft-from-analysis")
+
+    # Clean up temporary clip file if created
+    if _clip_temp_path and _clip_temp_path.exists():
+        try:
+            _clip_temp_path.unlink()
+        except OSError:
+            pass
 
     return 0
 
@@ -1221,4 +1280,83 @@ __all__ = [
     "deduplicate_similar_blocks",
     "build_contact_sheets",
     "cmd_scan_video",
+    "cmd_plan_scan",
 ]
+
+
+def cmd_plan_scan(args: "argparse.Namespace") -> int:  # noqa: F821
+    """Convert template + optional density override into explicit scan-video parameters.
+
+    This is a pure-mechanical planner: no video access, no LLM.
+    It reads the template's recommended_density, applies any override,
+    and outputs the exact scan-video command line to use.
+    """
+    from cc.templates import get_template_definition, load_templates
+
+    load_templates()
+
+    template_name = args.template
+    tmpl = get_template_definition(template_name)
+    if not tmpl:
+        from cc.constants import TEMPLATE_COLUMNS
+        available = ", ".join(sorted(TEMPLATE_COLUMNS.keys()))
+        msg = f"Unknown template: '{template_name}'. Available: {available}"
+        if hasattr(args, "output_format") and args.output_format == "json":
+            print(json.dumps({"status": "error", "message": msg}))
+        else:
+            print(f"ERROR: {msg}", file=sys.stderr)
+        return 1
+
+    # Resolve density: explicit override > template recommended > "normal"
+    density = getattr(args, "density", None)
+    if not density:
+        density = tmpl.get("recommended_density", "normal")
+
+    if density not in DENSITY_PRESETS:
+        density = "normal"
+
+    preset = DENSITY_PRESETS[density]
+    seg = tmpl.get("segmentation", {})
+
+    # Build the plan
+    plan: dict[str, Any] = {
+        "template": template_name,
+        "density": density,
+        "density_rationale": tmpl.get("density_rationale", ""),
+        "sample_interval": preset["sample_interval"],
+        "dedup_threshold": preset["dedup_threshold"],
+        "segmentation_strategy": seg.get("strategy", "scene-cut"),
+        "recommended_flags": [],
+        "scan_command_args": [],
+    }
+
+    # Build recommended flags
+    scan_args = [
+        "--density", density,
+    ]
+    if density == "dense":
+        plan["recommended_flags"].append("Consider --no-dedup for beat-accurate passes")
+        if seg.get("strategy") == "emotional-arc":
+            scan_args.append("--no-dedup")
+            plan["recommended_flags"].append("--no-dedup auto-enabled for emotional-arc strategy with dense density")
+
+    plan["scan_command_args"] = scan_args
+    plan["suggested_command"] = "cuesheet-creator scan-video --video <VIDEO> " + " ".join(scan_args)
+
+    is_json = hasattr(args, "output_format") and args.output_format == "json"
+    if is_json:
+        print(json.dumps(plan, ensure_ascii=False, indent=2))
+    else:
+        print(f"Template: {template_name}")
+        print(f"Density: {density} (sample_interval={preset['sample_interval']}s, dedup_threshold={preset['dedup_threshold']})")
+        if tmpl.get("density_rationale"):
+            print(f"Rationale: {tmpl['density_rationale']}")
+        print(f"Strategy: {seg.get('strategy', 'scene-cut')}")
+        if plan["recommended_flags"]:
+            print("Recommendations:")
+            for flag in plan["recommended_flags"]:
+                print(f"  - {flag}")
+        print(f"\nSuggested command:")
+        print(f"  cuesheet-creator scan-video --video <VIDEO> {' '.join(scan_args)}")
+
+    return 0

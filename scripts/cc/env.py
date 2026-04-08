@@ -302,15 +302,20 @@ def cmd_install_ffmpeg(args: argparse.Namespace) -> int:
     is_json = hasattr(args, "output_format") and args.output_format == "json"
     dry_run = hasattr(args, "dry_run") and args.dry_run
 
-    # Check if already available
-    ffmpeg_path, source = resolve_command_path("ffmpeg")
-    if ffmpeg_path and not dry_run:
-        msg = f"FFmpeg already available at {ffmpeg_path} (source: {source}). No download needed."
+    # Check if already available (require BOTH ffmpeg and ffprobe)
+    ffmpeg_path, ff_source = resolve_command_path("ffmpeg")
+    ffprobe_path, fp_source = resolve_command_path("ffprobe")
+    if ffmpeg_path and ffprobe_path and not dry_run:
+        msg = f"FFmpeg already available at {ffmpeg_path} (source: {ff_source}), ffprobe at {ffprobe_path} (source: {fp_source}). No download needed."
         if is_json:
-            print(json.dumps({"success": True, "message": msg, "path": ffmpeg_path, "source": source}))
+            print(json.dumps({"success": True, "message": msg, "ffmpeg_path": ffmpeg_path, "ffprobe_path": ffprobe_path}))
         else:
             print(msg)
         return 0
+    if ffmpeg_path and not ffprobe_path and not dry_run:
+        partial_msg = f"ffmpeg found at {ffmpeg_path} but ffprobe is missing. Proceeding with download to obtain both."
+        if not is_json:
+            print(partial_msg)
 
     result = download_ffmpeg(dry_run=dry_run)
 
@@ -465,6 +470,18 @@ def make_selfcheck_report() -> dict[str, Any]:
         if not item["available"] and item.get("group") != "ocr-extra":
             warnings.append(f"Optional component unavailable: {name}")
 
+    # Quality tier: 'recommended' requires scenedetect for production-grade segmentation
+    scene_available = optional_components.get("scenedetect", {}).get("available", False)
+    if scene_available:
+        quality_tier = "recommended"
+    else:
+        quality_tier = "basic"
+        warnings.append(
+            "Scene detection quality is DEGRADED: PySceneDetect is not installed. "
+            "The scan will use histogram-based fallback, which is less accurate for "
+            "subtle scene transitions. Install with: pip install cuesheet-creator[scene]"
+        )
+
     summary = summarize_report(required_packages, optional_components, ffmpeg, ffprobe)
 
     return {
@@ -508,6 +525,7 @@ def make_selfcheck_report() -> dict[str, Any]:
         },
         "overall": {
             "ready": len(blocking) == 0,
+            "quality_tier": quality_tier,
             "blocking": blocking,
             "warnings": warnings,
         },
@@ -540,6 +558,8 @@ def print_selfcheck_text(report: dict[str, Any]) -> None:
         print("Blocking issues:")
         for item in report["overall"]["blocking"]:
             print(f"  - {item}")
+    quality_tier = report["overall"].get("quality_tier", "unknown")
+    print(f"Quality tier: {quality_tier.upper()}" + (" (install scenedetect for 'recommended' tier)" if quality_tier == "basic" else ""))
     if report["overall"]["warnings"]:
         print("Warnings:")
         for item in report["overall"]["warnings"]:

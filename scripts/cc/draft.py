@@ -233,63 +233,92 @@ def cmd_draft_from_analysis(args: "argparse.Namespace") -> int:  # noqa: F821, C
         lines.append(f"*OCR status: {ocr_status}.* {ocr_error}")
         lines.append("")
 
-    # --- Character / Scene / Prop Summary ---
-    lines.append("## Character Summary")
-    lines.append("")
-    lines.append("*(Fill based on keyframe analysis -- list all identified characters with brief visual description, "
-                 "role in the analyzed segment, and evidence from specific blocks.)*")
-    lines.append("")
-    lines.append("| Temp Name | Visual Description | Appears in Blocks | Role / Notes |")
-    lines.append("|---|---|---|---|")
-    lines.append("| temp: Character-A | *(describe appearance)* | *(list blocks)* | *(role or behavior)* |")
-    lines.append("")
+    # --- Template-conditional scaffolding sections ---
+    # Only emit Character/Scene/Prop summaries and naming tables if the template
+    # actually has naming_field columns for those categories.
+    tmpl_def = get_template_definition(template)
+    naming_categories: set[str] = set()
+    if tmpl_def and "columns" in tmpl_def:
+        for col in tmpl_def["columns"]:
+            if isinstance(col, dict) and col.get("naming_field"):
+                cat = col.get("naming_category", "")
+                if cat:
+                    naming_categories.add(cat)
 
-    lines.append("## Scene / Setup Summary")
-    lines.append("")
-    lines.append("*(Fill based on keyframe analysis -- list all identified locations or setups.)*")
-    lines.append("")
-    lines.append("| Temp Name | Space Description | Appears in Blocks | Notes |")
-    lines.append("|---|---|---|---|")
-    lines.append("| temp: Scene-A | *(describe space)* | *(list blocks)* | *(lighting, mood, notable features)* |")
-    lines.append("")
+    has_characters = "characters" in naming_categories
+    has_scenes = "scenes" in naming_categories
+    has_props = "props" in naming_categories
+    has_any_naming = bool(naming_categories)
 
-    lines.append("## Prop Summary")
-    lines.append("")
-    lines.append("*(Fill if any key props are identified in close-ups, handoffs, or repeated appearances.)*")
-    lines.append("")
-    lines.append("| Temp Name | Description | Appears in Blocks | Importance |")
-    lines.append("|---|---|---|---|")
-    lines.append("| temp: Prop-A | *(describe prop)* | *(list blocks)* | *(key-prop / background)* |")
-    lines.append("")
+    if has_characters:
+        lines.append("## Character Summary")
+        lines.append("")
+        lines.append("*(Fill based on keyframe analysis -- list all identified characters with brief visual description, "
+                     "role in the analyzed segment, and evidence from specific blocks.)*")
+        lines.append("")
+        lines.append("| Temp Name | Visual Description | Appears in Blocks | Role / Notes |")
+        lines.append("|---|---|---|---|")
+        lines.append("| temp: Character-A | *(describe appearance)* | *(list blocks)* | *(role or behavior)* |")
+        lines.append("")
 
-    # --- Naming confirmation tables ---
-    lines.append("## Naming Confirmation Tables")
-    lines.append("")
-    lines.append("### Characters")
-    lines.append("")
-    lines.append("| temporary_name | evidence | confidence | confirmed_name | status |")
-    lines.append("|---|---|---|---|---|")
-    lines.append("| temp: Character-A | Fill based on keyframe & behavior | low |  | pending |")
-    lines.append("")
-    lines.append("### Scenes / Setups")
-    lines.append("")
-    lines.append("| temporary_setup | space_note | confidence | confirmed_setup | status |")
-    lines.append("|---|---|---|---|---|")
-    lines.append("| temp: Scene-A | Fill based on space & establishing shots | low |  | pending |")
-    lines.append("")
-    lines.append("### Props")
-    lines.append("")
-    lines.append("| temporary_prop | importance | evidence | confirmed_prop | status |")
-    lines.append("|---|---|---|---|---|")
-    lines.append("| temp: Prop-A | key-prop? | Fill based on close-ups & repeated appearances |  | pending |")
-    lines.append("")
+    if has_scenes:
+        lines.append("## Scene / Setup Summary")
+        lines.append("")
+        lines.append("*(Fill based on keyframe analysis -- list all identified locations or setups.)*")
+        lines.append("")
+        lines.append("| Temp Name | Space Description | Appears in Blocks | Notes |")
+        lines.append("|---|---|---|---|")
+        lines.append("| temp: Scene-A | *(describe space)* | *(list blocks)* | *(lighting, mood, notable features)* |")
+        lines.append("")
 
-    # --- Pending questions ---
+    if has_props:
+        lines.append("## Prop Summary")
+        lines.append("")
+        lines.append("*(Fill if any key props are identified in close-ups, handoffs, or repeated appearances.)*")
+        lines.append("")
+        lines.append("| Temp Name | Description | Appears in Blocks | Importance |")
+        lines.append("|---|---|---|---|")
+        lines.append("| temp: Prop-A | *(describe prop)* | *(list blocks)* | *(key-prop / background)* |")
+        lines.append("")
+
+    # --- Naming confirmation tables (only if template has naming fields) ---
+    if has_any_naming:
+        lines.append("## Naming Confirmation Tables")
+        lines.append("")
+
+        if has_characters:
+            lines.append("### Characters")
+            lines.append("")
+            lines.append("| temporary_name | evidence | confidence | confirmed_name | status |")
+            lines.append("|---|---|---|---|---|")
+            lines.append("| temp: Character-A | Fill based on keyframe & behavior | low |  | pending |")
+            lines.append("")
+
+        if has_scenes:
+            lines.append("### Scenes / Setups")
+            lines.append("")
+            lines.append("| temporary_setup | space_note | confidence | confirmed_setup | status |")
+            lines.append("|---|---|---|---|---|")
+            lines.append("| temp: Scene-A | Fill based on space & establishing shots | low |  | pending |")
+            lines.append("")
+
+        if has_props:
+            lines.append("### Props")
+            lines.append("")
+            lines.append("| temporary_prop | importance | evidence | confirmed_prop | status |")
+            lines.append("|---|---|---|---|---|")
+            lines.append("| temp: Prop-A | key-prop? | Fill based on close-ups & repeated appearances |  | pending |")
+            lines.append("")
+
+    # --- Pending questions (template-aware) ---
     lines.append("## Pending Questions")
     lines.append("")
-    lines.append("- Do characters have official names?")
-    lines.append("- Do scenes have internal project setup names?")
-    lines.append("- Do key props have standardized names?")
+    if has_characters:
+        lines.append("- Do characters have official names?")
+    if has_scenes:
+        lines.append("- Do scenes have internal project setup names?")
+    if has_props:
+        lines.append("- Do key props have standardized names?")
     lines.append(f"- Proceed with `{template}` template for final?")
     lines.append("- Export final Excel?")
     lines.append("")

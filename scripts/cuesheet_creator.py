@@ -39,7 +39,7 @@ from cc.exporters.xlsx import cmd_build_xlsx
 from cc.merge import cmd_merge_blocks, cmd_suggest_merges
 from cc.naming import cmd_apply_naming, cmd_derive_naming_tables
 from cc.normalize import cmd_normalize_fill
-from cc.scan import cmd_scan_video
+from cc.scan import cmd_plan_scan, cmd_scan_video
 from cc.skeleton import cmd_build_final_skeleton
 from cc.template_mgmt import (
     cmd_delete_template,
@@ -239,10 +239,19 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--asr-device", default="auto", help="ASR device: auto / cpu / cuda (default: auto)")
     scan.add_argument("--asr-compute-type", default="auto", help="ASR compute type: auto / int8 / float16 (default: auto)")
     scan.add_argument("--ocr", action="store_true", help="Enable OCR text detection (requires rapidocr / easyocr / paddleocr)")
+    scan.add_argument("--no-dedup", action="store_true", help="Disable visual deduplication of consecutive similar blocks (useful for dense/precision passes)")
+    scan.add_argument("--keep-all-frames", action="store_true", help="Keep all sampled frame metadata in analysis.json (default: only final block data). Useful for debugging.")
     scan.add_argument("--start-time", default=None, help="Clip start time (HH:MM:SS.mmm or seconds). Note: SceneDetect still scans the full file; results are filtered to range.")
     scan.add_argument("--end-time", default=None, help="Clip end time (same formats). Histogram mode respects range directly.")
     scan.add_argument("--output-format", choices=["text", "json"], default="text", help="Output format")
     scan.set_defaults(func=cmd_scan_video)
+
+    # --- plan-scan ---
+    plan = subparsers.add_parser("plan-scan", help="Convert template + density intent into explicit scan-video parameters")
+    plan.add_argument("--template", required=True, help="Template name to plan scan for")
+    plan.add_argument("--density", choices=["sparse", "normal", "dense"], default=None, help="Override template's recommended density")
+    plan.add_argument("--output-format", choices=["text", "json"], default="text")
+    plan.set_defaults(func=cmd_plan_scan)
 
     # --- draft-from-analysis ---
     draft = subparsers.add_parser("draft-from-analysis", help="Generate draft skeleton from analysis.json")

@@ -54,7 +54,9 @@ def compute_block_continuity(
         brightness_diff = abs(vf_a.get("brightness", 128) - vf_b.get("brightness", 128)) / 255.0
         contrast_diff = abs(vf_a.get("contrast", 50) - vf_b.get("contrast", 50)) / 128.0
         saturation_diff = abs(vf_a.get("saturation", 50) - vf_b.get("saturation", 50)) / 255.0
-        hue_diff = abs(vf_a.get("dominant_hue", 90) - vf_b.get("dominant_hue", 90)) / 180.0
+        hue_a = vf_a.get("dominant_hue", 90)
+        hue_b = vf_b.get("dominant_hue", 90)
+        hue_diff = min(abs(hue_a - hue_b), 180 - abs(hue_a - hue_b)) / 90.0
         visual_sim = 1.0 - (brightness_diff * 0.3 + contrast_diff * 0.2 + saturation_diff * 0.2 + hue_diff * 0.3)
         scores["visual_similarity"] = round(max(visual_sim, 0.0), 3)
         scores["same_tone"] = 1.0 if vf_a.get("tone") == vf_b.get("tone") else 0.0
@@ -115,7 +117,13 @@ def cmd_suggest_merges(args: "argparse.Namespace") -> int:  # noqa: F821
     asr_segments = analysis.get("asr", {}).get("segments", [])
 
     if len(draft_blocks) < 2:
-        print("Not enough blocks to suggest merges (need at least 2).", file=sys.stderr)
+        is_json = hasattr(args, "output_format") and args.output_format == "json"
+        msg = "Not enough blocks to suggest merges (need at least 2)."
+        if is_json:
+            import json as _json
+            print(_json.dumps({"status": "no-op", "message": msg, "suggestions": [], "block_count": len(draft_blocks)}))
+        else:
+            print(msg, file=sys.stderr)
         return 0
 
     threshold = float(args.threshold) if hasattr(args, "threshold") and args.threshold else 0.65
