@@ -121,12 +121,9 @@ def ffmpeg_install_hints() -> dict[str, Any]:
     ffmpeg_dir = LOCAL_FFMPEG_SEARCH_ROOT  # SKILL_ROOT / "tools" / "ffmpeg"
     ffmpeg_dir_str = str(ffmpeg_dir)
 
-    # Ensure the target directory exists so users can paste the path directly
-    # into File Explorer without getting "path not found".
-    try:
-        ffmpeg_dir.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        pass  # non-fatal; dir creation is a convenience, not a requirement
+    # NOTE: We intentionally do NOT create ffmpeg_dir here.
+    # selfcheck / install-hints must be read-only. Directory creation
+    # happens in cmd_install_ffmpeg() / download_ffmpeg() only.
 
     if family == "windows":
         return {
@@ -508,13 +505,17 @@ def make_selfcheck_report() -> dict[str, Any]:
             "install_with_scene": "python scripts/cuesheet_creator.py install-deps --include-optional scene --report-out <out-dir>/install_report.json",
             "install_with_asr": "python scripts/cuesheet_creator.py install-deps --include-optional asr --report-out <out-dir>/install_report.json",
             "install_with_ocr": "python scripts/cuesheet_creator.py install-deps --include-optional ocr --report-out <out-dir>/install_report.json",
+            "install_with_ocr_extra": "python scripts/cuesheet_creator.py install-deps --include-optional ocr-extra --report-out <out-dir>/install_report.json",
             "install_with_all_optional": "python scripts/cuesheet_creator.py install-deps --include-optional all --report-out <out-dir>/install_report.json",
+            "install_with_everything": "python scripts/cuesheet_creator.py install-deps --include-optional everything --report-out <out-dir>/install_report.json",
             "prepare_check_only": "python scripts/cuesheet_creator.py prepare-env --mode check-only --out-dir <out-dir>",
             "prepare_install_required": "python scripts/cuesheet_creator.py prepare-env --mode install-required --out-dir <out-dir>",
             "prepare_install_scene": "python scripts/cuesheet_creator.py prepare-env --mode install-scene --out-dir <out-dir>",
             "prepare_install_asr": "python scripts/cuesheet_creator.py prepare-env --mode install-asr --out-dir <out-dir>",
             "prepare_install_ocr": "python scripts/cuesheet_creator.py prepare-env --mode install-ocr --out-dir <out-dir>",
+            "prepare_install_ocr_extra": "python scripts/cuesheet_creator.py prepare-env --mode install-ocr-extra --out-dir <out-dir>",
             "prepare_install_all": "python scripts/cuesheet_creator.py prepare-env --mode install-all --out-dir <out-dir>",
+            "prepare_install_everything": "python scripts/cuesheet_creator.py prepare-env --mode install-everything --out-dir <out-dir>",
         },
         "guidance": {
             "ffmpeg_install_hints": ffmpeg_install_hints(),
@@ -581,14 +582,18 @@ def print_selfcheck_text(report: dict[str, Any]) -> None:
     print(f"  - + scene detect : {report['install_options']['install_with_scene']}")
     print(f"  - + ASR optional : {report['install_options']['install_with_asr']}")
     print(f"  - + OCR optional : {report['install_options']['install_with_ocr']}")
+    print(f"  - + OCR extra    : {report['install_options']['install_with_ocr_extra']}")
     print(f"  - + all optional : {report['install_options']['install_with_all_optional']}")
+    print(f"  - + everything   : {report['install_options']['install_with_everything']}")
     print("One-command flow:")
     print(f"  - check only     : {report['install_options']['prepare_check_only']}")
     print(f"  - install needed : {report['install_options']['prepare_install_required']}")
     print(f"  - + scene detect : {report['install_options']['prepare_install_scene']}")
     print(f"  - + ASR optional : {report['install_options']['prepare_install_asr']}")
     print(f"  - + OCR optional : {report['install_options']['prepare_install_ocr']}")
+    print(f"  - + OCR extra    : {report['install_options']['prepare_install_ocr_extra']}")
     print(f"  - install all    : {report['install_options']['prepare_install_all']}")
+    print(f"  - everything     : {report['install_options']['prepare_install_everything']}")
     print(f"Ready: {'YES' if report['overall']['ready'] else 'NO'}")
 
 
@@ -729,9 +734,10 @@ def print_install_report(report: dict[str, Any]) -> None:
             print(f"  - {item}")
 
 
-def run_install_deps_flow(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
+def run_install_deps_flow(args: argparse.Namespace, precheck: dict[str, Any] | None = None) -> tuple[int, dict[str, Any]]:
     optional_groups = normalize_optional_groups(args.include_optional)
-    precheck = make_selfcheck_report()
+    if precheck is None:
+        precheck = make_selfcheck_report()
     packages_to_install = collect_missing_python_packages(precheck, optional_groups)
 
     report: dict[str, Any] = {
@@ -911,7 +917,7 @@ def cmd_prepare_env(args: argparse.Namespace) -> int:
             upgrade_pip=args.upgrade_pip,
             fail_on_blocking=False,
         )
-        install_exit_code, install_report = run_install_deps_flow(install_args)
+        install_exit_code, install_report = run_install_deps_flow(install_args, precheck=precheck)
         report["install_invoked"] = True
         report["install_report"] = install_report
         exit_code = install_exit_code

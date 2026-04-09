@@ -1356,7 +1356,7 @@ def cmd_plan_scan(args: "argparse.Namespace") -> int:  # noqa: F821
             print("Recommendations:")
             for flag in plan["recommended_flags"]:
                 print(f"  - {flag}")
-        print(f"\nSuggested command:")
+        print("\nSuggested command:")
         print(f"  cuesheet-creator scan-video --video <VIDEO> {' '.join(scan_args)}")
 
     return 0

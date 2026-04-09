@@ -2161,6 +2161,109 @@ def test_refine_keyframe_selection_skips_short_blocks():
         assert result == 0, "Short blocks should be skipped"
 
 
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for review-round fixes
+# ---------------------------------------------------------------------------
+
+def test_selfcheck_quality_tier_key_matches_optional_components():
+    """Regression: selfcheck quality_tier must use 'scene:scenedetect' key,
+    not 'scenedetect', to match OPTIONAL_COMPONENTS."""
+    from cc.constants import OPTIONAL_COMPONENTS
+    # The key that the quality_tier logic uses must exist in OPTIONAL_COMPONENTS
+    assert "scene:scenedetect" in OPTIONAL_COMPONENTS, \
+        "OPTIONAL_COMPONENTS must contain 'scene:scenedetect'"
+    # And the old wrong key must NOT be there
+    assert "scenedetect" not in OPTIONAL_COMPONENTS, \
+        "OPTIONAL_COMPONENTS should not contain bare 'scenedetect' key"
+
+
+def test_unknown_template_draft_fails_before_artifacts():
+    """Regression: draft-from-analysis with unknown template must fail
+    without leaving partial Markdown or JSON artifacts."""
+    import argparse
+
+    cc.load_templates()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        analysis = {
+            "video": {"source_path": "/tmp/test.mp4", "duration": 10.0},
+            "draft_blocks": [
+                {"shot_block": "A1", "start_seconds": 0, "end_seconds": 5,
+                 "start_time": "00:00:00.000", "end_time": "00:00:05.000",
+                 "keyframe": "", "visual_features": {}},
+            ],
+            "notes": [], "asr": {"status": "not-run"}, "ocr": {"status": "not-run"},
+            "agent_summary": {},
+        }
+        analysis_path = tmpdir_path / "analysis.json"
+        cc.write_json(analysis_path, analysis)
+        md_path = tmpdir_path / "cue_sheet.md"
+
+        args = argparse.Namespace(
+            analysis_json=analysis_path, output=md_path,
+            template="nonexistent-template", output_format="text",
+        )
+        exit_code = cc.cmd_draft_from_analysis(args)
+        assert exit_code == 1, "Should fail with exit code 1 on unknown template"
+        assert not md_path.exists(), "Markdown should not be written on template failure"
+        assert not (tmpdir_path / "draft_fill.json").exists(), \
+            "draft_fill.json should not be written on template failure"
+
+
+def test_script_template_has_naming_categories():
+    """Regression: script.json must have naming_category on its naming_field
+    columns so draft scaffolding conditionalization works correctly."""
+    cc.load_templates()
+    tmpl = cc.get_template_definition("script")
+    assert tmpl is not None, "script template must exist"
+    naming_cats = set()
+    for col in tmpl["columns"]:
+        if col.get("naming_field"):
+            cat = col.get("naming_category", "")
+            assert cat, f"Column '{col['field']}' has naming_field=true but no naming_category"
+            naming_cats.add(cat)
+    assert "characters" in naming_cats, "script must have characters naming_category"
+    assert "scenes" in naming_cats, "script must have scenes naming_category"
+
+
+def test_temp_marker_extraction_case_insensitive():
+    """Regression: extract_temp_markers must match Temp:, TEMP:, temp:."""
+    from cc.naming import extract_temp_markers
+    assert extract_temp_markers("temp: Girl-A") == ["temp: Girl-A"]
+    upper = extract_temp_markers("TEMP: Girl-A")
+    assert len(upper) == 1, f"TEMP: should match, got {upper}"
+    title = extract_temp_markers("Temp: Main Hall")
+    assert len(title) == 1, f"Temp: should match, got {title}"
+
+
+def test_temp_marker_validation_case_insensitive():
+    """Regression: validate_temp_marker_coverage must strip Temp:/TEMP: prefix
+    correctly for needs_confirmation matching."""
+    from cc.validation import validate_temp_marker_coverage
+    cc.load_templates()
+    row = {
+        "shot_block": "A1",
+        "scene": "Temp: Main Hall",
+        "characters": "TEMP: Girl-A",
+        "needs_confirmation": "girl-a official name; main hall setup name",
+    }
+    gaps = validate_temp_marker_coverage(row, "script")
+    assert gaps == [], f"Expected no gaps for case-variant markers, got: {gaps}"
+
+
+def test_density_presets_exist():
+    """Regression: DENSITY_PRESETS must define sparse/normal/dense."""
+    from cc.constants import DENSITY_PRESETS
+    for name in ("sparse", "normal", "dense"):
+        assert name in DENSITY_PRESETS, f"Missing density preset: {name}"
+        preset = DENSITY_PRESETS[name]
+        assert "sample_interval" in preset
+        assert "dedup_threshold" in preset
+
+
 # ---------------------------------------------------------------------------
 # Runner (standalone, no pytest required)
 # ---------------------------------------------------------------------------

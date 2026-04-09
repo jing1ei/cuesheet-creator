@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -46,8 +47,8 @@ def validate_temp_marker_coverage(row: dict[str, Any], template: str = "producti
         value = str(row.get(nf, ""))
         markers = extract_temp_markers(value)
         for marker in markers:
-            # Extract the name portion after "temp: " for matching
-            marker_key = marker.replace("temp:", "").strip().lower()
+            # Extract the name portion after "temp: " for matching (case-insensitive)
+            marker_key = re.sub(r"(?i)temp:\s*", "", marker).strip().lower()
             if not marker_key:
                 continue
             # Check if this specific marker (or a recognizable fragment) is
