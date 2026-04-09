@@ -9,7 +9,7 @@
 
   "segmentation": {
     "strategy": "scene-cut",
-    "description": "Split blocks on scene/camera language changes. Standard collaborative shot block granularity for multi-department discussion.",
+    "description": "Split blocks on visual scene changes detected by cut-based analysis (scenedetect ContentDetector or histogram fallback). Standard collaborative shot block granularity for multi-department discussion.",
     "split_triggers": [
       "Scene change (new location, new setup)",
       "Time-layer change (reality / flashback / dream / white-out)",

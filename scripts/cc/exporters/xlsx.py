@@ -147,6 +147,13 @@ def cmd_build_xlsx(args: "argparse.Namespace") -> int:  # noqa: F821
         if delivery["empty_recommended_fields"] > 0:
             print(f"  WARNING: {delivery['empty_recommended_fields']} empty recommended field(s) across all rows")
         print(f"  delivery_ready: {'YES' if delivery['delivery_ready'] else 'NO'}")
+        if not delivery["delivery_ready"]:
+            print("  ╔══════════════════════════════════════════════════════════╗")
+            print("  ║  ⚠  INCOMPLETE — this export has unfilled required     ║")
+            print("  ║  fields and/or unresolved temp markers. Do NOT treat   ║")
+            print("  ║  this as a final deliverable. Use --fail-on-delivery-  ║")
+            print("  ║  gap in CI/pipeline contexts to enforce readiness.     ║")
+            print("  ╚══════════════════════════════════════════════════════════╝")
 
     fail_on_gap = hasattr(args, "fail_on_delivery_gap") and args.fail_on_delivery_gap
     if fail_on_gap and not delivery["delivery_ready"]:

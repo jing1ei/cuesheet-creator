@@ -9,7 +9,7 @@
 
   "segmentation": {
     "strategy": "narrative-beat",
-    "description": "Split blocks on narrative beats — story events, character entrances/exits, location changes. Visual camera style is secondary to story progression.",
+    "description": "Interpret blocks as narrative beats — story events, character entrances/exits, location changes. Note: the scan stage uses cut-based detection; this strategy guides post-scan merge scoring and LLM fill-in interpretation. Sparse density is appropriate because story beats are coarser than visual cuts.",
     "split_triggers": [
       "New story event or narrative beat",
       "Character entrance or exit",

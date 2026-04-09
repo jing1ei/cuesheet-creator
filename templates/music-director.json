@@ -9,7 +9,7 @@
 
   "segmentation": {
     "strategy": "emotional-arc",
-    "description": "Split blocks on mood transitions and musical function changes. A single visual scene may have multiple emotional beats that each need separate scoring direction.",
+    "description": "Interpret blocks by mood transitions and musical function changes. Note: the scan stage uses cut-based detection (scenedetect or histogram); this strategy guides post-scan merge scoring, dedup policy, and LLM fill-in interpretation — not the initial segmentation itself. Use dense density + --no-dedup to capture finer boundaries.",
     "split_triggers": [
       "Mood shift (tension -> release, calm -> urgent)",
       "Music function change (underscore -> featured -> silence)",

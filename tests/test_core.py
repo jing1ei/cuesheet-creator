@@ -2264,6 +2264,125 @@ def test_density_presets_exist():
         assert "dedup_threshold" in preset
 
 
+
+
+# ---------------------------------------------------------------------------
+# Scan-quality regression tests (synthetic video clips)
+# ---------------------------------------------------------------------------
+
+def _make_synthetic_video(path: Path, fps: int, scenes: list[tuple[float, tuple[int, int, int]]]) -> None:
+    """Create a minimal synthetic video with colored blocks at specified timestamps.
+
+    scenes: list of (duration_seconds, (B, G, R)) tuples.
+    Each scene is a solid-color frame held for the given duration.
+    """
+    try:
+        import cv2 as _cv2
+        import numpy as _np
+    except ImportError:
+        return  # skip if cv2 not available
+    width, height = 160, 120
+    fourcc = _cv2.VideoWriter_fourcc(*"mp4v")
+    writer = _cv2.VideoWriter(str(path), fourcc, fps, (width, height))
+    if not writer.isOpened():
+        return
+    for duration, color in scenes:
+        frame_count = max(1, int(duration * fps))
+        frame = _np.full((height, width, 3), color, dtype=_np.uint8)
+        for _ in range(frame_count):
+            writer.write(frame)
+    writer.release()
+
+
+def test_scan_detects_hard_cuts_in_synthetic_video():
+    """Scan-quality: histogram fallback should detect hard color cuts.
+    Skips if cv2 or ffprobe is unavailable (integration test)."""
+    try:
+        import cv2 as _cv2  # noqa: F401
+        import numpy as _np  # noqa: F401
+    except ImportError:
+        return  # skip
+    # Check ffprobe availability
+    from cc.env import resolve_command_path
+    ffprobe_path, _ = resolve_command_path("ffprobe")
+    if not ffprobe_path:
+        return  # skip — ffprobe not available
+    import argparse
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        video_path = tmpdir_path / "hardcuts.mp4"
+        # 3 distinct scenes: red (2s), green (2s), blue (2s) @ 10fps
+        _make_synthetic_video(video_path, 10, [
+            (2.0, (0, 0, 255)),    # red
+            (2.0, (0, 255, 0)),    # green
+            (2.0, (255, 0, 0)),    # blue
+        ])
+        if not video_path.exists():
+            return  # video creation failed (missing codec)
+
+        out_dir = tmpdir_path / "output"
+        args = argparse.Namespace(
+            video=video_path, out_dir=out_dir,
+            density="normal", sample_interval=1.0,
+            scene_threshold=0.35, content_threshold=27.0,
+            max_samples=0, max_width=160,
+            asr=False, ocr=False,
+            no_dedup=True, keep_all_frames=False, cleanup=False,
+            start_time=None, end_time=None,
+            output_format="text",
+        )
+        exit_code = cc.cmd_scan_video(args)
+        assert exit_code == 0, "Scan should succeed"
+
+        analysis_path = out_dir / "analysis.json"
+        assert analysis_path.exists(), "analysis.json should be created"
+        analysis = cc.read_json(analysis_path)
+        block_count = len(analysis.get("draft_blocks", []))
+        # With 3 visually distinct scenes and no dedup, we expect >= 2 blocks
+        assert block_count >= 2, f"Expected >= 2 blocks from 3-scene video, got {block_count}"
+
+
+def test_scan_single_shot_produces_one_block():
+    """Scan-quality: a static single-color video should produce exactly 1 block.
+    Skips if cv2 or ffprobe is unavailable (integration test)."""
+    try:
+        import cv2 as _cv2  # noqa: F401
+        import numpy as _np  # noqa: F401
+    except ImportError:
+        return  # skip
+    from cc.env import resolve_command_path
+    ffprobe_path, _ = resolve_command_path("ffprobe")
+    if not ffprobe_path:
+        return  # skip
+    import argparse
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        video_path = tmpdir_path / "static.mp4"
+        # Single static gray frame for 4 seconds
+        _make_synthetic_video(video_path, 10, [(4.0, (128, 128, 128))])
+        if not video_path.exists():
+            return
+
+        out_dir = tmpdir_path / "output"
+        args = argparse.Namespace(
+            video=video_path, out_dir=out_dir,
+            density="dense", sample_interval=0.5,
+            scene_threshold=0.35, content_threshold=27.0,
+            max_samples=0, max_width=160,
+            asr=False, ocr=False,
+            no_dedup=False, keep_all_frames=False, cleanup=False,
+            start_time=None, end_time=None,
+            output_format="text",
+        )
+        exit_code = cc.cmd_scan_video(args)
+        assert exit_code == 0
+        analysis = cc.read_json(out_dir / "analysis.json")
+        block_count = len(analysis.get("draft_blocks", []))
+        assert block_count == 1, f"Static video should produce 1 block, got {block_count}"
+
+
 # ---------------------------------------------------------------------------
 # Runner (standalone, no pytest required)
 # ---------------------------------------------------------------------------

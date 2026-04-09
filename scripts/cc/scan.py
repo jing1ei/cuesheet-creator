@@ -887,6 +887,32 @@ def cmd_scan_video(args: "argparse.Namespace") -> int:  # noqa: F821, C901
     sd_candidates, sd_err = detect_scenes_scenedetect(clip_video_path, sd_content_threshold)
     if sd_candidates is not None:
         detection_method = "scenedetect"
+
+        # Detector escalation: if result is implausibly sparse for the video's
+        # duration and chosen density, retry with a more sensitive threshold.
+        # "Implausibly sparse" = fewer blocks than expected_min_blocks.
+        expected_min_blocks = max(2, int(effective_duration / (sample_interval * 10)))
+        if len(sd_candidates) <= expected_min_blocks and effective_duration > 5.0:
+            escalation_thresholds = [
+                sd_content_threshold * 0.6,
+                sd_content_threshold * 0.35,
+            ]
+            for esc_threshold in escalation_thresholds:
+                esc_candidates, esc_err = detect_scenes_scenedetect(clip_video_path, esc_threshold)
+                if esc_candidates and len(esc_candidates) > len(sd_candidates):
+                    notes.append(
+                        f"Detector escalation: initial threshold={sd_content_threshold} found {len(sd_candidates)} candidates "
+                        f"(expected >= {expected_min_blocks}). Retry with threshold={esc_threshold:.1f} found {len(esc_candidates)} candidates."
+                    )
+                    sd_candidates = esc_candidates
+                    sd_content_threshold = esc_threshold
+                    break
+            else:
+                notes.append(
+                    f"WARNING: Scene detection found very few boundaries ({len(sd_candidates)} candidates) "
+                    f"even after threshold escalation. This video may have subtle transitions that "
+                    f"cut-based detection cannot capture. Consider manual block splitting or a denser pass."
+                )
         if is_clip and clip_offset > 0:
             # Shift scenedetect timestamps back to original video time
             for c in sd_candidates:
@@ -1000,7 +1026,17 @@ def cmd_scan_video(args: "argparse.Namespace") -> int:  # noqa: F821, C901
                 candidate["visual_features"] = best_frame.get("visual_features")
 
     if len(scene_candidates) <= 1:
-        notes.append("Very few scene candidates detected; consider manual merging or denser sampling in draft phase")
+        if effective_duration > 5.0 and density_name in ("dense",):
+            notes.append(
+                "WARNING: Dense mode with a video longer than 5 seconds produced only 1 block. "
+                "This strongly suggests the detector could not find meaningful boundaries. "
+                "Possible causes: (1) gradual transitions the cut detector cannot see, "
+                "(2) threshold too high for this content, (3) uniform/static content. "
+                "Consider: lowering --content-threshold, using --scene-threshold with histogram mode, "
+                "or manually splitting blocks in the draft phase."
+            )
+        else:
+            notes.append("Very few scene candidates detected; consider manual merging or denser sampling in draft phase")
 
     draft_blocks = build_draft_blocks(scene_candidates, float(effective_end))
 
@@ -1046,6 +1082,26 @@ def cmd_scan_video(args: "argparse.Namespace") -> int:  # noqa: F821, C901
                 f"Deduplicated {dedup_merges} visually similar consecutive block(s): "
                 f"{original_count} → {len(draft_blocks)} blocks"
             )
+
+    # --- Cleanup non-final sampled frames if requested ---
+    do_cleanup = getattr(args, "cleanup", False)
+    if do_cleanup and draft_blocks:
+        final_keyframes: set[str] = set()
+        for block in draft_blocks:
+            kf = block.get("keyframe", "")
+            if kf:
+                final_keyframes.add(Path(kf).name if "/" in kf or "\\" in kf else kf)
+        removed_count = 0
+        for img_file in keyframe_dir.iterdir():
+            if img_file.is_file() and img_file.suffix.lower() in (".jpg", ".jpeg", ".png"):
+                if img_file.name not in final_keyframes:
+                    try:
+                        img_file.unlink()
+                        removed_count += 1
+                    except OSError:
+                        pass
+        if removed_count > 0:
+            notes.append(f"Cleanup: removed {removed_count} non-final sampled frame image(s)")
 
     # --- ASR ---
     asr_result: dict[str, Any] = {"status": "not-run", "segments": []}
@@ -1326,6 +1382,10 @@ def cmd_plan_scan(args: "argparse.Namespace") -> int:  # noqa: F821
         "sample_interval": preset["sample_interval"],
         "dedup_threshold": preset["dedup_threshold"],
         "segmentation_strategy": seg.get("strategy", "scene-cut"),
+        "segmentation_note": (
+            "The scan stage always uses cut-based detection (scenedetect or histogram). "
+            "The strategy label affects post-scan merge scoring, dedup policy, and LLM fill-in guidance."
+        ),
         "recommended_flags": [],
         "scan_command_args": [],
     }

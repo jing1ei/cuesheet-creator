@@ -241,6 +241,7 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--ocr", action="store_true", help="Enable OCR text detection (requires rapidocr / easyocr / paddleocr)")
     scan.add_argument("--no-dedup", action="store_true", help="Disable visual deduplication of consecutive similar blocks (useful for dense/precision passes)")
     scan.add_argument("--keep-all-frames", action="store_true", help="Keep all sampled frame metadata in analysis.json (default: only final block data). Useful for debugging.")
+    scan.add_argument("--cleanup", action="store_true", help="Delete non-final sampled frame images after keyframe refinement. Keeps only block keyframes + contact sheets.")
     scan.add_argument("--start-time", default=None, help="Clip start time (HH:MM:SS.mmm or seconds). Video is pre-trimmed for faster scene detection when possible.")
     scan.add_argument("--end-time", default=None, help="Clip end time (same formats). Pre-trim requires ffmpeg.")
     scan.add_argument("--output-format", choices=["text", "json"], default="text", help="Output format")
