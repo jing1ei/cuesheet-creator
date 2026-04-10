@@ -67,10 +67,20 @@ def normalize_motion(value: str) -> tuple[str, bool]:
         return stripped, False
     if lower in MOTION_ALIASES:
         return MOTION_ALIASES[lower], True
-    # Partial match: "slow push-in" -> "push-in"
+    # Partial match: only if the enum value is the dominant term
+    # (starts the string or is preceded by a non-alpha character).
+    # "slow push-in" -> "push-in" is OK.
+    # "push-in to tracking" should NOT silently pick one.
+    import re as _re
+    single_matches: list[str] = []
     for enum_val in MOTION_ENUM:
-        if enum_val in lower:
-            return enum_val, True
+        # Match enum_val as a word boundary in the input
+        pattern = r"(?:^|[\s,;/+])" + _re.escape(enum_val) + r"(?:$|[\s,;/+])"
+        if _re.search(pattern, lower):
+            single_matches.append(enum_val)
+    if len(single_matches) == 1:
+        return single_matches[0], True
+    # Multiple matches or no match: leave as-is (LLM used a compound description)
     return stripped, False
 
 

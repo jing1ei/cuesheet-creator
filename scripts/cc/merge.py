@@ -31,6 +31,15 @@ def _strategy_weight_multipliers(strategy: str) -> dict[str, float]:
             "same_tone": 1.0, "same_color_temp": 0.8,
             "asr_continuity": 1.3, "short_block_bonus": 1.0,
         }
+    if strategy == "gameplay-phase":
+        # Gameplay: visual similarity is unreliable (3D scene changes constantly).
+        # Weight OCR/ASR continuity and short-block bonuses higher.
+        # Cut weakness is less meaningful (many false cuts in gameplay).
+        return {
+            "visual_similarity": 0.5, "cut_weakness": 0.4,
+            "same_tone": 0.8, "same_color_temp": 0.6,
+            "asr_continuity": 1.5, "short_block_bonus": 1.3,
+        }
     return {
         "visual_similarity": 1.0, "cut_weakness": 1.0,
         "same_tone": 1.0, "same_color_temp": 1.0,

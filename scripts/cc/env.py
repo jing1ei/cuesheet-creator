@@ -20,6 +20,7 @@ from cc.constants import (
     PREPARE_ENV_MODES,
     REQUIRED_PACKAGES,
     SUPPORTED_OPTIONAL_GROUPS,
+    __version__,
 )
 from cc.utils import (
     command_filename,
@@ -226,7 +227,7 @@ def download_ffmpeg(target_dir: Path | None = None, dry_run: bool = False) -> di
     print(f"  Downloading FFmpeg essentials from {url} ...", file=sys.stderr)
 
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "cuesheet-creator/1.4"})
+        req = urllib.request.Request(url, headers={"User-Agent": f"cuesheet-creator/{__version__}"})
         response = urllib.request.urlopen(req, timeout=120)
         total_size = int(response.headers.get("Content-Length", 0))
         total_mb = total_size / (1024 * 1024) if total_size else 0

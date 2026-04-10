@@ -63,6 +63,12 @@ _BUILTIN_TEMPLATE_COLUMNS: dict[str, list[str]] = {
         "important_dialogue", "music_note", "rhythm_change", "instrumentation",
         "dynamics", "confidence", "needs_confirmation",
     ],
+    "gameplay-music": [
+        "shot_block", "start_time", "end_time", "game_phase", "mood",
+        "event", "ui_text", "music_note", "music_layer", "rhythm_change",
+        "instrumentation", "dynamics", "important_dialogue",
+        "confidence", "needs_confirmation",
+    ],
 }
 
 # Template system runtime state
@@ -84,6 +90,7 @@ DEFAULT_COLUMN_WIDTHS = {
     "important_dialogue": 30, "music_note": 28, "director_note": 28,
     "confidence": 18, "needs_confirmation": 24, "rhythm_change": 20,
     "instrumentation": 20, "dynamics": 18,
+    "game_phase": 20, "ui_text": 24, "music_layer": 20,
 }
 
 SUPPORTED_OPTIONAL_GROUPS = {"asr", "ocr", "ocr-extra", "scene"}

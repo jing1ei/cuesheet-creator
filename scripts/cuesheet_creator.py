@@ -41,6 +41,7 @@ from cc.naming import cmd_apply_naming, cmd_derive_naming_tables
 from cc.normalize import cmd_normalize_fill
 from cc.scan import cmd_plan_scan, cmd_scan_video
 from cc.skeleton import cmd_build_final_skeleton
+from cc.split import cmd_split_blocks
 from cc.template_mgmt import (
     cmd_delete_template,
     cmd_list_templates,
@@ -166,6 +167,7 @@ from cc.merge import (  # noqa: F811
     compute_block_continuity,
 )
 from cc.skeleton import cmd_build_final_skeleton  # noqa: F811
+from cc.split import cmd_split_blocks  # noqa: F811
 
 # Initialize template system
 load_templates()
@@ -330,6 +332,13 @@ def build_parser() -> argparse.ArgumentParser:
     suggest.add_argument("--template", default=None, help="Template name for strategy-aware weight adjustment")
     suggest.add_argument("--output-format", choices=["text", "json"], default="text")
     suggest.set_defaults(func=cmd_suggest_merges)
+
+    # --- split-blocks ---
+    split = subparsers.add_parser("split-blocks", help="Split blocks at LLM-annotated _split_at points in filled draft_fill.json")
+    split.add_argument("--source-json", type=resolved_path, required=True, help="Filled draft_fill.json with _split_at annotations")
+    split.add_argument("--output", type=resolved_path, default=None, help="Output path (default: overwrite source)")
+    split.add_argument("--output-format", choices=["text", "json"], default="text")
+    split.set_defaults(func=cmd_split_blocks)
 
     # --- export-md ---
     export_md = subparsers.add_parser("export-md", help="Generate Markdown final from final_cues.json")

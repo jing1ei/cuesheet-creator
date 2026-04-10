@@ -884,6 +884,15 @@ def cmd_scan_video(args: "argparse.Namespace") -> int:  # noqa: F821, C901
             else:
                 _clip_temp_path = None  # fallback to full-file scan
 
+    # Register temp clip cleanup to run even if scan crashes.
+    # We cannot wrap the entire 300-line body in try/finally without a
+    # major refactor, so we register a simple cleanup callback.
+    import atexit
+    def _atexit_clip_cleanup() -> None:
+        _cleanup_clip_temp(_clip_temp_path)
+    if _clip_temp_path:
+        atexit.register(_atexit_clip_cleanup)
+
     sd_candidates, sd_err = detect_scenes_scenedetect(clip_video_path, sd_content_threshold)
     if sd_candidates is not None:
         detection_method = "scenedetect"
@@ -998,8 +1007,9 @@ def cmd_scan_video(args: "argparse.Namespace") -> int:  # noqa: F821, C901
                         "visual_features": visual_features,
                     })
             prev_frame = frame
-    finally:
-        pass  # Keep capture open for motion estimation below
+    except Exception:
+        capture.release()
+        raise
 
     if detection_method == "scenedetect":
         for candidate in scene_candidates:
@@ -1308,13 +1318,18 @@ def cmd_scan_video(args: "argparse.Namespace") -> int:  # noqa: F821, C901
         print("Next step: draft-from-analysis")
 
     # Clean up temporary clip file if created
-    if _clip_temp_path and _clip_temp_path.exists():
-        try:
-            _clip_temp_path.unlink()
-        except OSError:
-            pass
+    _cleanup_clip_temp(_clip_temp_path)
 
     return 0
+
+
+def _cleanup_clip_temp(path: Path | None) -> None:
+    """Remove the temporary pre-trimmed clip file, if it exists."""
+    if path and path.exists():
+        try:
+            path.unlink()
+        except OSError:
+            pass
 
 
 __all__ = [

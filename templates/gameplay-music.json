@@ -1,0 +1,65 @@
+{
+  "name": "gameplay-music",
+  "schema_version": 2,
+  "description": "For game music / interactive audio scoring. Segments by gameplay phase transitions, UI events, and state changes rather than cinematic cuts.",
+  "recommended_density": "dense",
+  "density_rationale": "Gameplay state changes happen rapidly and are not always accompanied by dramatic visual cuts. Dense sampling + OCR captures UI-driven triggers that histogram/scenedetect miss.",
+
+  "perspective": "Identify gameplay phases and state transitions first. Every UI title, phase change, boss entrance, result screen, or HUD state shift is a potential music cue point. Instrumentation and dynamic suggestions should reference game state (e.g. 'exploration loop', 'combat layer 2', 'victory sting') not just visual mood.",
+
+  "segmentation": {
+    "strategy": "gameplay-phase",
+    "description": "Segment by gameplay phase transitions and UI-driven events. The scan stage uses cut-based detection (scenedetect or histogram), which often under-segments gameplay because the 3D scene changes constantly while semantically important boundaries (UI titles, phase transitions) occupy only a small portion of the frame. This strategy guides: (1) suggest-merges to weight OCR continuity and UI overlay changes higher, (2) LLM fill-in to identify phase boundaries from keyframes, (3) LLM to use _split_at annotations when the scan missed a boundary. Always run with --ocr to capture UI text triggers.",
+    "split_triggers": [
+      "Game phase transition (menu -> loading -> gameplay -> result)",
+      "UI title or overlay appearance (full-screen titles, boss names, phase labels, countdown text)",
+      "Gameplay state change (exploration -> combat, normal -> boss phase, phase 1 -> phase 2)",
+      "Win / lose / score / result screen",
+      "Cutscene start or end within gameplay",
+      "Significant HUD state change (new objective, ability unlock, health critical threshold)"
+    ],
+    "merge_bias": [
+      "Merge consecutive frames within the same gameplay phase if no UI state change occurs",
+      "Merge across minor camera angle changes during continuous combat",
+      "Do NOT merge across UI title appearances — these are hard music cue points",
+      "Do NOT merge across phase transitions even if the visual environment is the same",
+      "Do NOT merge across cutscene boundaries"
+    ],
+    "keyframe_priority": [
+      "Frame showing the UI title or overlay text (the trigger moment itself)",
+      "Frame showing the clearest game state indicator (HUD, score, phase label)",
+      "Frame showing the gameplay action at peak intensity for the phase",
+      "For transition blocks, frame at the exact moment of state change"
+    ]
+  },
+
+  "columns": [
+    {"field": "shot_block", "label": "Shot Block", "width": 12, "required": true, "recommended": false, "naming_field": false, "prefill_source": "structural"},
+    {"field": "start_time", "label": "Start", "width": 14, "required": true, "recommended": false, "naming_field": false, "prefill_source": "structural"},
+    {"field": "end_time", "label": "End", "width": 14, "required": true, "recommended": false, "naming_field": false, "prefill_source": "structural"},
+    {"field": "game_phase", "label": "Game Phase", "width": 20, "required": true, "recommended": true, "naming_field": false, "prefill_source": null},
+    {"field": "mood", "label": "Mood", "width": 20, "required": true, "recommended": true, "naming_field": false, "prefill_source": "visual_mood"},
+    {"field": "event", "label": "Event / Trigger", "width": 28, "required": true, "recommended": true, "naming_field": false, "prefill_source": null},
+    {"field": "ui_text", "label": "UI Text", "width": 24, "required": false, "recommended": true, "naming_field": false, "prefill_source": null},
+    {"field": "music_note", "label": "Music Note", "width": 28, "required": true, "recommended": true, "naming_field": false, "prefill_source": null},
+    {"field": "music_layer", "label": "Music Layer", "width": 20, "required": false, "recommended": true, "naming_field": false, "prefill_source": null},
+    {"field": "rhythm_change", "label": "Rhythm Change", "width": 20, "required": false, "recommended": true, "naming_field": false, "prefill_source": null},
+    {"field": "instrumentation", "label": "Instrumentation", "width": 20, "required": false, "recommended": true, "naming_field": false, "prefill_source": null},
+    {"field": "dynamics", "label": "Dynamics", "width": 18, "required": false, "recommended": true, "naming_field": false, "prefill_source": null},
+    {"field": "important_dialogue", "label": "Dialogue / VO", "width": 24, "required": false, "recommended": false, "naming_field": false, "prefill_source": "asr"},
+    {"field": "confidence", "label": "Confidence", "width": 18, "required": false, "recommended": false, "naming_field": false, "prefill_source": "confidence"},
+    {"field": "needs_confirmation", "label": "Needs Confirmation", "width": 24, "required": false, "recommended": false, "naming_field": false, "prefill_source": "needs_confirmation"}
+  ],
+
+  "fill_guidance": [
+    "**game_phase**: the gameplay state during this block (e.g. 'menu/lobby', 'countdown', 'exploration', 'combat phase 1', 'boss encounter', 'victory', 'defeat', 'result screen', 'cutscene')",
+    "**mood**: emotional intensity AND gameplay tension (e.g. 'calm exploration', 'rising threat -> combat engagement', 'peak intensity boss phase 2', 'triumph -> wind-down')",
+    "**event**: what triggers this block boundary — focus on game state changes, NOT camera movement (e.g. 'UI title: 大战对决 appears', 'boss health drops below 50%', 'player enters arena', 'result screen with score')",
+    "**ui_text**: any on-screen text visible in the keyframe — titles, HUD labels, prompts, score displays. If OCR prefill exists, verify and clean up. If no OCR was run, transcribe from keyframe.",
+    "**music_note**: music direction tied to game state (e.g. 'transition sting at title reveal, then hard-cut to combat loop', 'layer in percussion when boss appears', 'strip to ambient pad during exploration')",
+    "**music_layer**: which layer of an adaptive music system this block uses (e.g. 'ambient base', 'combat layer 1', 'combat layer 2 + boss percussion', 'victory sting -> result loop')",
+    "**rhythm_change**: BPM and pulse changes tied to game phase (e.g. 'no pulse in menu -> 120bpm combat loop at battle start', 'accelerate to 140bpm at phase 2')",
+    "**instrumentation**: specific instruments/textures per phase (e.g. 'exploration: acoustic guitar + light pad; combat: distorted guitars + taiko + synth bass')",
+    "**dynamics**: game-state-driven dynamics (e.g. 'pp during menu -> subito ff at battle start -> mp exploration after victory')"
+  ]
+}

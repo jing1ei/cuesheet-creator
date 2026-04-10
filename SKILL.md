@@ -248,7 +248,7 @@ A cue sheet is **not delivery-ready** if any of these fail:
 | **I1** | **Purpose**: Who will read this cue sheet and what will they do with it? | Determines template, column selection, fill-in perspective | `production` (cross-department collaboration) |
 | **I2** | **Template**: Which template to use? | Determines columns, segmentation strategy, merge rules | Inferred from I1 answer |
 | **I3** | **Keyframes in export**: Should the Excel/Markdown deliverable include embedded keyframe images? | Some templates (music-director, script) default to text-only, but the user may still want visual reference | `yes` for production; **ask** for music-director and script |
-| **I4** | **ASR/OCR**: Is dialogue or on-screen text important? | Determines whether to enable --asr / --ocr during scan | Infer from context; if video has dialogue or UI text, suggest enabling |
+| **I4** | **ASR/OCR**: Is dialogue or on-screen text important? | Determines whether to enable --asr / --ocr during scan | Infer from context; if video has dialogue or UI text, suggest enabling. **Gameplay/game recordings almost always need `--ocr`** (UI titles, HUD elements, score screens, phase transitions are rendered as on-screen text that drives music cues). |
 | **I5** | **Output language**: What language should the cue sheet content be written in? | Fill-in text (scene descriptions, mood, event, music_note, director_note) must match the target audience's language. Column headers/field names stay in English (they are structural). | **Always ask.** Do NOT guess from the user's input language — users often mix languages in conversation but have a specific preference for deliverables. |
 
 **Agent behavior — confirm what you can't infer:**
@@ -345,8 +345,11 @@ The agent infers density from I1 (purpose), I2 (template), and context clues:
 | User mentions "storyboard", "manga", "rough cut", "structure" | sparse |
 | User mentions "review", "collaboration", "production", "edit" | normal |
 | User mentions "trailer", "MV", "music video", "choreography", "animation timing" | dense |
+| User mentions "gameplay", "game recording", "game capture", "combat", "boss fight" | dense + **auto-suggest `--ocr`** (UI text drives cue points in games) |
 | User mentions "sound design", "foley", "VFX", "lip sync", "frame by frame" | frame-accurate (two-pass) |
 | No clear signal from context | Use template's `recommended_density`, or `normal` as fallback |
+
+> **Gameplay / interactive content rule**: When the video is described as gameplay, game recording, or any interactive content with a HUD/UI, the agent MUST suggest enabling `--ocr`. In gameplay, critical music triggers (phase transitions, title cards, boss introductions, result screens) are rendered as **on-screen text overlays**, not as cinematic scene cuts. Without OCR, these triggers are invisible to the scan stage. The agent should also suggest `dense` density because gameplay visual changes are rapid and often subtle (same environment, different game state).
 
 **Agent presents the suggestion as part of the Step 0 confirmation, not as a separate question:**
 
@@ -601,6 +604,49 @@ After fill-in, the draft must contain:
 - ASR / OCR key info if available
 
 ### Step 4: Export draft deliverables (Excel-first)
+
+> **Before export, check if the LLM identified any split points during fill-in.** If `draft_fill.json` rows contain `_split_at` annotations, run `split-blocks` first.
+
+#### Step 3c. Post-fill block splitting (when LLM finds missing boundaries)
+
+> **This step is needed when the mechanical scan could not detect semantically important boundaries.** Common cases: gameplay UI title overlays, text-based phase transitions, subtle mood shifts within a visually uniform segment.
+
+During Step 3b fill-in, if the LLM identifies that a block should be split (e.g., a UI title "大战对决" appears mid-block and marks a music transition), the LLM annotates the block in `draft_fill.json`:
+
+```json
+{
+  "shot_block": "A1",
+  "start_time": "00:00:00.000",
+  "end_time": "00:00:59.000",
+  "_split_at": [
+    {"time": "00:00:30.000", "reason": "UI title trigger: phase transition to battle loop"}
+  ],
+  "...": "..."
+}
+```
+
+**Rules for `_split_at`:**
+- The LLM adds `_split_at` during fill-in ONLY when it observes a semantically important boundary that the scan missed
+- Each entry needs `time` (HH:MM:SS.mmm, must be between block's start and end) and `reason`
+- The LLM should still fill in the block's content fields based on the DOMINANT content (the split will create new rows that the LLM fills in a second pass)
+- This is NOT a replacement for density/OCR settings. If the video needs denser scanning, re-scan first. `_split_at` is for boundary corrections the scan inherently cannot make.
+
+After fill-in, run:
+
+```bash
+python scripts/cuesheet_creator.py split-blocks --source-json <out-dir>/draft_fill.json --output <out-dir>/draft_fill.json
+```
+
+`split-blocks`:
+1. Reads `_split_at` annotations from each row
+2. Splits the row at each specified time, creating new rows with correct `start_time`/`end_time`
+3. Assigns the nearest keyframe to each new row (by timestamp proximity)
+4. Copies content fields to the first sub-block; marks remaining sub-blocks' content fields as empty for LLM re-fill
+5. Renumbers all blocks sequentially
+6. Removes `_split_at` from processed rows
+7. Sets `fill_status` to `"partial"` (new empty blocks need filling)
+
+After `split-blocks`, the agent should re-run Step 3b fill-in on the newly created empty blocks (skip blocks that already have content).
 
 > **Show the user something tangible before asking questions.** Generate the full Excel + Markdown deliverables with `temp:` markers, then present them. This is more useful than an abstract naming table.
 
@@ -1022,6 +1068,7 @@ Detailed checklist in `references/review-checklist.md`. Core checks:
 | `install-deps` | Install missing Python packages |
 | `scan-video` | Extract frames + scene detection + optional ASR/OCR + output analysis.json. Default output: `<video-dir>/<video-name>_cuesheet/`. Supports `--start-time` / `--end-time` for clip range. |
 | `draft-from-analysis` | Generate template-differentiated draft skeleton from analysis.json |
+| `split-blocks` | Split blocks at LLM-annotated `_split_at` points. Reads annotations from filled draft_fill.json, creates new rows at specified times, assigns nearest keyframes, renumbers blocks. Use after LLM fill-in when the scan missed semantically important boundaries (e.g. gameplay UI titles, phase transitions). |
 | `merge-blocks` | Merge draft blocks based on a merge plan (with validation). Unreferenced blocks are auto-appended with `"unmerged": true` flag (not silently dropped). Use `--strict` to fail on unreferenced blocks instead. |
 | `suggest-merges` | Auto-compute inter-block continuity scores and output a suggested merge plan. LLM reviews and adjusts before passing to `merge-blocks`. Use `--threshold` to adjust sensitivity (default 0.65). Use `--template` to adjust scoring weights based on template segmentation strategy. |
 | `build-final-skeleton` | Generate final_cues.json skeleton from merged/draft blocks or filled draft_fill.json |
